@@ -62,6 +62,26 @@ function hostIs(context: ProviderContext, host: string): boolean {
 	}
 }
 
+/** Parses a response body as JSON, throwing a descriptive error on garbage. */
+async function getJson<T>(res: Response): Promise<T> {
+	let text: string;
+	try {
+		text = await res.text();
+	} catch {
+		throw new Error("读取响应体失败");
+	}
+	try {
+		return JSON.parse(text) as T;
+	} catch {
+		throw new Error(`响应不是有效 JSON（${text.slice(0, 80)}）`);
+	}
+}
+
+/** Rounds and clamps a percent into 0-100. */
+function pct(value: number): number {
+	return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 // --- opencode / opencode-go (Zen subscription quota) -----------------------
 
 interface QuotaWindow {
@@ -93,7 +113,7 @@ function opencodeDef(): ProviderDef {
 				signal,
 			});
 			if (!res.ok) throw new HttpError(res.status);
-			const payload = (await res.json()) as OpencodeUsagePayload;
+			const payload = await getJson<OpencodeUsagePayload>(res);
 			const usage = payload.usage;
 			if (!usage) return undefined;
 
@@ -106,7 +126,7 @@ function opencodeDef(): ProviderDef {
 			const detailLines: string[] = [];
 			for (const [label, win] of windows) {
 				if (typeof win?.percent !== "number") continue;
-				const percent = Math.max(0, Math.round(win.percent));
+				const percent = pct(win.percent);
 				segments.push({ label, percent, reset: win.resetsAt });
 				const flag = win.status && win.status !== "ok" ? ` [${win.status}]` : "";
 				detailLines.push(`• ${label}: ${percent}% — 重置 ${formatReset(win.resetsAt)}${flag}`);
@@ -143,7 +163,7 @@ function deepseekDef(): ProviderDef {
 				signal,
 			});
 			if (!res.ok) throw new HttpError(res.status);
-			const payload = (await res.json()) as DeepseekBalancePayload;
+			const payload = await getJson<DeepseekBalancePayload>(res);
 
 			if (!payload.is_available) {
 				return {
@@ -212,7 +232,7 @@ function stepfunDef(): ProviderDef {
 				signal,
 			});
 			if (!res.ok) throw new HttpError(res.status);
-			const payload = (await res.json()) as StepfunAccountPayload;
+			const payload = await getJson<StepfunAccountPayload>(res);
 			const balance = typeof payload.balance === "number" ? payload.balance : undefined;
 			if (balance === undefined) return undefined;
 
@@ -277,7 +297,7 @@ function zaiDef(): ProviderDef {
 					signal,
 				});
 				if (!res.ok) throw new HttpError(res.status);
-				const payload = (await res.json()) as ZaiQuotaPayload & { code?: number; msg?: string };
+				const payload = await getJson<ZaiQuotaPayload & { code?: number; msg?: string }>(res);
 				// The GLM monitor API reports auth failures as HTTP 200 + success:false.
 				if (payload.success === false) throw new HttpError(401);
 				if (!payload.data?.limits?.length) return undefined;
@@ -294,7 +314,7 @@ function zaiDef(): ProviderDef {
 				if (levelLabel) detailLines.push(`• 套餐: ${levelLabel}`);
 				for (const [index, win] of windows.entries()) {
 					const label = labels[index] ?? `W${index + 1}`;
-					const percent = Math.max(0, Math.round(win.percentage ?? 0));
+					const percent = pct(win.percentage ?? 0);
 					const resetIso =
 						typeof win.nextResetTime === "number"
 							? new Date(win.nextResetTime).toISOString()
@@ -407,7 +427,7 @@ function openaiCodexDef(): ProviderDef {
 				signal,
 			});
 			if (!res.ok) throw new HttpError(res.status);
-			const payload = (await res.json()) as OpenAICodexUsagePayload;
+			const payload = await getJson<OpenAICodexUsagePayload>(res);
 			const rateLimit = payload.rate_limit;
 			if (!rateLimit) return undefined;
 
@@ -424,7 +444,7 @@ function openaiCodexDef(): ProviderDef {
 					typeof win.limit_window_seconds === "number"
 						? formatDuration(win.limit_window_seconds)
 						: fallbackLabel;
-				const percent = Math.max(0, Math.round(win.used_percent));
+				const percent = pct(win.used_percent);
 				const resetIso = codexResetIso(win);
 				segments.push({ label, percent, reset: resetIso });
 				detailLines.push(`• ${label}: ${percent}% — 重置 ${formatReset(resetIso)}`);

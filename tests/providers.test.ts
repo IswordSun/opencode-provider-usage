@@ -78,6 +78,27 @@ test("non-2xx responses throw an HttpError carrying the status", async () => {
 	).rejects.toMatchObject({ status: 429 });
 });
 
+test("a non-JSON body fails with a descriptive error", async () => {
+	globalThis.fetch = (async () =>
+		new Response("<html>bad gateway</html>", {
+			status: 200,
+			headers: { "content-type": "text/html" },
+		})) as unknown as typeof fetch;
+	await expect(defByName("opencode").fetch("key", new AbortController().signal, {})).rejects.toThrow(
+		/JSON/,
+	);
+});
+
+test("percents above 100 are clamped", async () => {
+	mockJson({ usage: { rolling: { percent: 250 }, weekly: { percent: -3 } } });
+	const data = await defByName("opencode").fetch("key", new AbortController().signal, {});
+	if (data?.kind !== "percent") throw new Error("expected percent");
+	expect(data.segments.map((s) => [s.label, s.percent])).toEqual([
+		["5h", 100],
+		["7d", 0],
+	]);
+});
+
 test("matchProvider selects by provider id and base url", () => {
 	const defs = providerDefs();
 	expect(matchProvider(defs, { providerID: "opencode-go" })?.name).toBe("opencode");

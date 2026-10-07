@@ -6,6 +6,11 @@
  * opens a detail dialog on click or `/quota`. All data comes from the server
  * plugin over RPC (`isword.provider-usage`); this plugin never touches
  * credentials or the network.
+ *
+ * Robustness: every RPC payload is re-validated through `parseSnapshot`
+ * before it reaches the render tree, the initial fetch retries with backoff
+ * while the server plugin is still starting, `/quota` refreshes are bounded
+ * by a timeout, and all subscriptions are torn down on cleanup.
  */
 
 import { Plugin } from "@opencode/plugin/tui";
@@ -13,8 +18,12 @@ import { For, Show, createSignal, type JSX } from "solid-js";
 import { formatDuration, formatReset, fmtDelta, stamp } from "./format.js";
 import { matchProvider, providerDefs } from "./providers.js";
 import { ProviderUsage } from "./rpc.js";
-import type { ProviderState, Snapshot, UsageSegment } from "./types.js";
+import type { ProviderFailure, ProviderState, Snapshot } from "./types.js";
 import { EMPTY_SNAPSHOT } from "./types.js";
+import { parseSnapshot } from "./validate.js";
+
+const INITIAL_LOAD_ATTEMPTS = 10;
+const REFRESH_TIMEOUT_MS = 15_000;
 
 const FAILURE_LABELS: Record<string, string> = {
 	no_key: "无key",
@@ -24,8 +33,26 @@ const FAILURE_LABELS: Record<string, string> = {
 	network: "查询失败",
 };
 
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+	return Promise.race([promise, sleep(ms).then(() => undefined)]).catch(() => undefined);
+}
+
 function segmentTone(percent: number): "success" | "warning" | "error" {
 	return percent >= 85 ? "error" : percent >= 60 ? "warning" : "success";
+}
+
+function failureLabel(state: ProviderFailure): string {
+	if (state.code === "rate_limit" && state.retryAt) {
+		const remainingMs = Date.parse(state.retryAt) - Date.now();
+		if (Number.isFinite(remainingMs) && remainingMs > 0) {
+			return `限流退避中 ${formatDuration(remainingMs / 1000)}`;
+		}
+	}
+	return FAILURE_LABELS[state.code] ?? "查询失败";
 }
 
 export default Plugin.define({
@@ -34,6 +61,7 @@ export default Plugin.define({
 		const defs = providerDefs();
 		const usage = context.client.rpc(ProviderUsage);
 		const [snap, setSnap] = createSignal<Snapshot>(EMPTY_SNAPSHOT);
+		let disposed = false;
 
 		const theme = context.theme;
 		const color = {
@@ -47,18 +75,31 @@ export default Plugin.define({
 
 		// --- state ---------------------------------------------------------------
 
-		const load = async () => {
-			try {
-				const result = (await usage.get({})) as { snapshot: Snapshot };
-				setSnap(result.snapshot);
-			} catch {
-				// Server plugin not ready yet; the event stream will catch up.
-			}
+		const applySnapshot = (input: unknown): void => {
+			if (disposed) return;
+			setSnap(parseSnapshot(input));
 		};
-		void load();
-		const unsubscribe = usage.events.on("updated", (event) => {
-			setSnap(event.data.snapshot as Snapshot);
-		});
+
+		// The server plugin may register its RPC slightly after the TUI starts;
+		// retry with backoff instead of giving up on the first failure.
+		void (async () => {
+			for (let attempt = 0; attempt < INITIAL_LOAD_ATTEMPTS && !disposed; attempt++) {
+				try {
+					const result = (await usage.get({})) as { snapshot?: unknown };
+					applySnapshot(result?.snapshot);
+					return;
+				} catch {
+					await sleep(Math.min(500 * 2 ** attempt, 8_000));
+				}
+			}
+		})();
+
+		let unsubscribe: (() => void) | undefined;
+		try {
+			unsubscribe = usage.events.on("updated", (event) => applySnapshot(event.data?.snapshot));
+		} catch {
+			// RPC not registered yet; the retry loop above will populate state.
+		}
 
 		// --- helpers -------------------------------------------------------------
 
@@ -71,7 +112,7 @@ export default Plugin.define({
 
 		function statusText(state: ProviderState): JSX.Element {
 			if (!state.ok) {
-				return <text fg={color.muted}>⚡ {FAILURE_LABELS[state.code] ?? "查询失败"}</text>;
+				return <text fg={color.muted}>⚡ {failureLabel(state)}</text>;
 			}
 			const data = state.data;
 			if (data.kind === "balance") {
@@ -103,9 +144,7 @@ export default Plugin.define({
 			for (const seg of state.data.segments) {
 				if (!seg.delta) continue;
 				let part = `${seg.label} ${fmtDelta(seg.delta)}%`;
-				if (seg.etaMs && Number.isFinite(seg.etaMs)) {
-					part += `（按当前速率 ~${formatDuration(seg.etaMs / 1000)}后用满）`;
-				}
+				if (seg.etaMs !== undefined) part += `（按当前速率 ~${formatDuration(seg.etaMs / 1000)}后用满）`;
 				parts.push(part);
 			}
 			return parts.length ? `• 趋势: ${parts.join(" · ")}` : undefined;
@@ -116,16 +155,33 @@ export default Plugin.define({
 			lines: string[];
 		}
 
+		/** One-line summary used by the compact `/quota all` view. */
+		function summaryLine(state: ProviderState): string {
+			if (!state.ok) return `✗ ${failureLabel(state)}`;
+			if (state.data.kind === "balance") return state.data.text;
+			return state.data.segments
+				.map((seg) => `${seg.label} ${seg.percent}%${seg.delta ? `(${fmtDelta(seg.delta)}%)` : ""}`)
+				.join(" · ");
+		}
+
 		function detailBlocks(snapshot: Snapshot, onlyName?: string): Block[] {
 			const blocks: Block[] = [];
 			for (const def of defs) {
 				if (onlyName && def.name !== onlyName) continue;
 				const state = snapshot.providers[def.name];
 				if (!state) continue;
+
+				// The "all" view stays one line per provider so the dialog fits
+				// whatever height the host gives it; the single-provider view
+				// keeps the full detail lines.
+				if (!onlyName) {
+					blocks.push({ title: def.title, lines: [summaryLine(state)] });
+					continue;
+				}
 				if (!state.ok) {
 					blocks.push({
 						title: `${def.title} — ✗`,
-						lines: [`• ${FAILURE_LABELS[state.code] ?? "查询失败"}: ${state.error}`],
+						lines: [`• ${failureLabel(state)}: ${state.error}`],
 					});
 					continue;
 				}
@@ -147,7 +203,7 @@ export default Plugin.define({
 			const sessionCost = () => {
 				if (!props.sessionID) return undefined;
 				const cost = context.data.session.cost(props.sessionID);
-				return cost > 0 ? `• 本会话成本 $${cost.toFixed(3)}` : undefined;
+				return Number.isFinite(cost) && cost > 0 ? `• 本会话成本 $${cost.toFixed(3)}` : undefined;
 			};
 			return (
 				<box
@@ -177,18 +233,16 @@ export default Plugin.define({
 		}
 
 		function openDetails(onlyName?: string, sessionID?: string): void {
+			if (disposed) return;
 			context.ui.dialog.set({ size: "large", centered: true });
 			context.ui.dialog.show(() => <Details onlyName={onlyName} sessionID={sessionID} />);
 		}
 
 		async function handleQuota(input?: string): Promise<void> {
+			if (disposed) return;
 			const all = (input ?? "").trim().toLowerCase() === "all";
-			try {
-				const result = (await usage.refresh(all ? { all: true } : {})) as { snapshot: Snapshot };
-				setSnap(result.snapshot);
-			} catch {
-				// Keep the cached snapshot and show what we have.
-			}
+			const result = await withTimeout(usage.refresh(all ? { all: true } : {}), REFRESH_TIMEOUT_MS);
+			if (result) applySnapshot((result as { snapshot?: unknown })?.snapshot);
 			openDetails(all ? undefined : activeDef()?.name, currentSessionID());
 		}
 
@@ -202,7 +256,11 @@ export default Plugin.define({
 			return (
 				<Show when={state()}>
 					{(value) => (
-						<box flexShrink={0} paddingLeft={1} onMouseUp={() => openDetails(activeDef()?.name, sessionID)}>
+						<box
+							flexShrink={0}
+							paddingLeft={1}
+							onMouseUp={() => openDetails(activeDef()?.name, sessionID)}
+						>
 							{statusText(value())}
 						</box>
 					)}
@@ -238,7 +296,8 @@ export default Plugin.define({
 		}));
 
 		return () => {
-			unsubscribe();
+			disposed = true;
+			unsubscribe?.();
 			disposePrompt();
 			disposeHome();
 		};
