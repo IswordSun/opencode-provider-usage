@@ -1,0 +1,45 @@
+{
+  "name": "opencode-provider-usage",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode plugin: live provider usage/quota/balance in the TUI status bar.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./rpc": "./src/rpc.ts",
+    "./tui": "./src/tui.tsx"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
+    "@types/bun": "1.4.0",
+    "@types/node": "24.12.2",
+    "solid-js": "1.9.15",
+    "typescript": "5.8.2"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.14",
+    "@opentui/solid": ">=0.5.14",
+    "solid-js": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
+  }
+}
