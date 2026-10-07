@@ -73,6 +73,10 @@ function parseSegments(value: unknown): UsageSegment[] {
 		if (delta !== undefined) segment.delta = Math.max(-100, Math.min(100, Math.round(delta)));
 		const etaMs = finite(raw.etaMs);
 		if (etaMs !== undefined && etaMs > 0 && etaMs <= 7 * 86_400_000) segment.etaMs = etaMs;
+		const status = string(raw.status);
+		if (status) segment.status = status.slice(0, 16);
+		const note = string(raw.note);
+		if (note) segment.note = note.slice(0, 48);
 		segments.push(segment);
 	}
 	return segments;

@@ -16,6 +16,10 @@ export interface UsageSegment {
 	delta?: number;
 	/** Estimated milliseconds until 100% at the current burn rate. */
 	etaMs?: number;
+	/** Provider-reported window status when not "ok" (e.g. "limited"). */
+	status?: string;
+	/** Short supplementary text for this window (e.g. "已用 12/240 积分"). */
+	note?: string;
 }
 
 export interface PercentUsage {

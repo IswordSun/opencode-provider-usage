@@ -118,6 +118,7 @@ let refreshTask: Promise<Snapshot> | undefined;
 let lastRefreshAt = 0;
 let lastSamplesSaveAt = 0;
 let seeded = false;
+let lastDiscoverySignature = "";
 let snapshotCache: Snapshot = { updatedAt: new Date(0).toISOString(), providers: {} };
 
 function rebuildSnapshot(): void {
@@ -346,6 +347,14 @@ async function doRefresh(): Promise<Snapshot> {
 	try {
 		const keyed = await discoverKeyedDefs();
 		const keyedNames = new Set(keyed.map((entry) => entry.def.name));
+		const signature = keyed
+			.map((entry) => entry.def.name)
+			.sort()
+			.join(",");
+		if (signature !== lastDiscoverySignature) {
+			lastDiscoverySignature = signature;
+			log(`发现已配置 key 的提供商: ${signature || "（无）"}`);
+		}
 		// A provider whose key disappeared leaves the snapshot entirely.
 		for (const name of [...states.keys()]) {
 			if (keyedNames.has(name)) continue;

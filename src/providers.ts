@@ -9,7 +9,6 @@
 import {
 	formatDuration,
 	formatMoney,
-	formatReset,
 } from "./format.js";
 import type { Tone, UsageData, UsageSegment } from "./types.js";
 
@@ -73,14 +72,22 @@ export function matchesDef(def: ProviderDef, context: ProviderContext): boolean 
 	return host !== undefined && def.hosts.includes(host);
 }
 
+/** Response bodies above this are refused before parsing. */
+const MAX_BODY_BYTES = 2_000_000;
+
 /** Parses a response body as JSON, throwing a descriptive error on garbage. */
 async function getJson<T>(res: Response): Promise<T> {
+	const declared = Number(res.headers.get("content-length") ?? "");
+	if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+		throw new Error(`响应体过大（${(declared / 1_000_000).toFixed(1)}MB）`);
+	}
 	let text: string;
 	try {
 		text = await res.text();
 	} catch {
 		throw new Error("读取响应体失败");
 	}
+	if (text.length > MAX_BODY_BYTES) throw new Error("响应体过大");
 	try {
 		return JSON.parse(text) as T;
 	} catch {
@@ -133,16 +140,16 @@ function opencodeDef(): ProviderDef {
 				["30d", usage.monthly],
 			];
 			const segments: UsageSegment[] = [];
-			const detailLines: string[] = [];
 			for (const [label, win] of windows) {
 				if (typeof win?.percent !== "number") continue;
-				const percent = pct(win.percent);
-				segments.push({ label, percent, reset: win.resetsAt });
-				const flag = win.status && win.status !== "ok" ? ` [${win.status}]` : "";
-				detailLines.push(`• ${label}: ${percent}% — 重置 ${formatReset(win.resetsAt)}${flag}`);
+				const segment: UsageSegment = { label, percent: pct(win.percent), reset: win.resetsAt };
+				if (win.status && win.status !== "ok") segment.status = win.status;
+				segments.push(segment);
 			}
 			if (!segments.length) return undefined;
-			return { kind: "percent", title: "OpenCode 额度", segments, detailLines };
+			// Windows are rendered as progress bars by the TUI; detailLines
+			// carries only supplementary text.
+			return { kind: "percent", title: "OpenCode 额度", segments, detailLines: [] };
 		},
 	};
 }
@@ -189,7 +196,7 @@ function deepseekDef(): ProviderDef {
 			const detailLines = payload.balance_infos.map((info) => {
 				const currency = info.currency || "CNY";
 				return (
-					`• ${currency}: 总额 ${formatMoney(info.total_balance, currency)}` +
+					`${currency}: 总额 ${formatMoney(info.total_balance, currency)}` +
 					`（充值 ${formatMoney(info.topped_up_balance, currency)}` +
 					` / 赠送 ${formatMoney(info.granted_balance, currency)}）`
 				);
@@ -253,10 +260,10 @@ function stepfunDef(): ProviderDef {
 				text: `💰 ¥${fmt(balance)}`,
 				tone: balance < 5 ? "error" : balance < 20 ? "warning" : "success",
 				detailLines: [
-					`• 可用余额: ¥${fmt(balance)}`,
-					`• 充值总额: ¥${fmt(payload.total_cash_balance)}`,
-					`• 赠送总额: ¥${fmt(payload.total_voucher_balance)}`,
-					`• 账户类型: ${typeLabel}`,
+					`可用余额: ¥${fmt(balance)}`,
+					`充值总额: ¥${fmt(payload.total_cash_balance)}`,
+					`赠送总额: ¥${fmt(payload.total_voucher_balance)}`,
+					`账户类型: ${typeLabel}`,
 				],
 			};
 		},
@@ -342,22 +349,20 @@ function zaiDef(): ProviderDef {
 
 				const segments: UsageSegment[] = [];
 				const detailLines: string[] = [];
-				if (levelLabel) detailLines.push(`• 套餐: ${levelLabel}`);
+				if (levelLabel) detailLines.push(`套餐 ${levelLabel}`);
 				for (const [index, win] of windows.entries()) {
 					const label = labels[index] ?? `W${index + 1}`;
-					const percent = pct(win.percentage ?? 0);
-					const resetIso =
-						typeof win.nextResetTime === "number"
-							? new Date(win.nextResetTime).toISOString()
-							: undefined;
-					segments.push({ label, percent, reset: resetIso });
-					const used =
-						typeof win.currentValue === "number" && typeof win.usage === "number"
-							? `${win.currentValue}/${win.usage}`
-							: "?";
-					detailLines.push(
-						`• ${label}: ${percent}%（已用 ${used} 积分）— 重置 ${formatReset(resetIso)}`,
-					);
+					const segment: UsageSegment = {
+						label,
+						percent: pct(win.percentage ?? 0),
+					};
+					if (typeof win.nextResetTime === "number") {
+						segment.reset = new Date(win.nextResetTime).toISOString();
+					}
+					if (typeof win.currentValue === "number" && typeof win.usage === "number") {
+						segment.note = `已用 ${win.currentValue}/${win.usage} 积分`;
+					}
+					segments.push(segment);
 				}
 				if (!segments.length) return undefined;
 				return { kind: "percent", title: "GLM Coding Plan 额度", segments, detailLines };
@@ -430,7 +435,7 @@ function moonshotDef(): ProviderDef {
 					text: `💰 ${formatMoney(available, currency)}`,
 					tone: balanceTone(available),
 					detailLines: [
-						`• 可用余额: ${formatMoney(available, currency)}（现金 ${formatMoney(cash, currency)} / 赠送 ${formatMoney(voucher, currency)}）`,
+						`可用余额: ${formatMoney(available, currency)}（现金 ${formatMoney(cash, currency)} / 赠送 ${formatMoney(voucher, currency)}）`,
 					],
 				};
 			};
@@ -494,7 +499,7 @@ function siliconflowDef(): ProviderDef {
 					text: `💰 ${formatMoney(balance, currency)}`,
 					tone: balanceTone(balance),
 					detailLines: [
-						`• 可用余额: ${formatMoney(balance, currency)}（充值 ${formatMoney(charge, currency)} / 累计 ${formatMoney(total, currency)}）${status}`,
+						`可用余额: ${formatMoney(balance, currency)}（充值 ${formatMoney(charge, currency)} / 累计 ${formatMoney(total, currency)}）${status}`,
 					],
 				};
 			};
@@ -548,7 +553,7 @@ function openrouterDef(): ProviderDef {
 				text: `💰 ${formatMoney(remaining, "USD")}`,
 				tone: balanceTone(remaining),
 				detailLines: [
-					`• 剩余额度: ${formatMoney(remaining, "USD")}（已用 ${formatMoney(used, "USD")} / 总充值 ${formatMoney(total, "USD")}）`,
+					`剩余额度: ${formatMoney(remaining, "USD")}（已用 ${formatMoney(used, "USD")} / 总充值 ${formatMoney(total, "USD")}）`,
 				],
 			};
 		},
@@ -595,7 +600,7 @@ function skyworkDef(): ProviderDef {
 				text: `💰 ${formatMoney(available, currency)}`,
 				tone: balanceTone(available),
 				detailLines: [
-					`• 可用余额: ${formatMoney(available, currency)}（已用 ${formatMoney(consumed, currency)} / 累计 ${formatMoney(total, currency)}）`,
+					`可用余额: ${formatMoney(available, currency)}（已用 ${formatMoney(consumed, currency)} / 累计 ${formatMoney(total, currency)}）`,
 				],
 			};
 		},
@@ -641,7 +646,7 @@ function novitaDef(): ProviderDef {
 				text: `💰 $${usd(availableUnits)}`,
 				tone: balanceTone(available),
 				detailLines: [
-					`• 可用余额: $${usd(availableUnits)}（现金 $${usd(num(payload.cashBalance))} / 信用额度 $${usd(num(payload.creditLimit))}）`,
+					`可用余额: $${usd(availableUnits)}（现金 $${usd(num(payload.cashBalance))} / 信用额度 $${usd(num(payload.creditLimit))}）`,
 				],
 			};
 		},
@@ -733,34 +738,31 @@ function openaiCodexDef(): ProviderDef {
 			];
 			const segments: UsageSegment[] = [];
 			const detailLines: string[] = [];
-			if (payload.plan_type) detailLines.push(`• 套餐: ${payload.plan_type}`);
+			if (payload.plan_type) detailLines.push(`套餐 ${payload.plan_type}`);
 			for (const [fallbackLabel, win] of windows) {
 				if (!win || typeof win.used_percent !== "number") continue;
 				const label =
 					typeof win.limit_window_seconds === "number"
 						? formatDuration(win.limit_window_seconds)
 						: fallbackLabel;
-				const percent = pct(win.used_percent);
-				const resetIso = codexResetIso(win);
-				segments.push({ label, percent, reset: resetIso });
-				detailLines.push(`• ${label}: ${percent}% — 重置 ${formatReset(resetIso)}`);
+				segments.push({ label, percent: pct(win.used_percent), reset: codexResetIso(win) });
 			}
 			if (rateLimit.limit_reached || rateLimit.allowed === false) {
-				detailLines.push("• ⚠ 当前额度已耗尽");
+				detailLines.push("⚠ 当前额度已耗尽");
 			} else {
-				detailLines.push("• 当前额度: 可用");
+				detailLines.push("当前额度可用");
 			}
 			const credits = payload.credits;
 			if (typeof credits?.balance === "number") {
-				detailLines.push(`• Credits 余额: ${credits.balance.toFixed(2)}`);
+				detailLines.push(`Credits 余额 ${credits.balance.toFixed(2)}`);
 			} else if (credits?.unlimited) {
-				detailLines.push("• Credits: 不限额");
+				detailLines.push("Credits 不限额");
 			}
-			if (credits?.overage_limit_reached) detailLines.push("• ⚠ 额外 Credits 已达上限");
-			if (payload.spend_control?.reached) detailLines.push("• ⚠ 已触及账户支出上限");
+			if (credits?.overage_limit_reached) detailLines.push("⚠ 额外 Credits 已达上限");
+			if (payload.spend_control?.reached) detailLines.push("⚠ 已触及账户支出上限");
 			const resets = payload.rate_limit_reset_credits;
 			if (typeof resets?.applicable_available_count === "number") {
-				detailLines.push(`• 可用额度重置: ${resets.applicable_available_count} 次`);
+				detailLines.push(`可用额度重置 ${resets.applicable_available_count} 次`);
 			}
 
 			if (segments.length) {

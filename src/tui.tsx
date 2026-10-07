@@ -7,23 +7,28 @@
  * plugin over RPC (`isword.provider-usage`); this plugin never touches
  * credentials or the network.
  *
- * Robustness: every RPC payload is re-validated through `parseSnapshot`
- * before it reaches the render tree, the initial fetch retries with backoff
- * while the server plugin is still starting, `/quota` refreshes are bounded
- * by a timeout, and all subscriptions are torn down on cleanup.
+ * Presentation: percent providers render coloured progress bars per window
+ * (single view) or an aligned one-line summary (`/quota all`); balance
+ * providers render the amount in its severity colour. Robustness: every RPC
+ * payload is re-validated through `parseSnapshot` before it reaches the
+ * render tree, the initial fetch retries with backoff while the server
+ * plugin is still starting, `/quota` refreshes are bounded by a timeout,
+ * and all subscriptions are torn down on cleanup.
  */
 
 import { Plugin } from "@opencode/plugin/tui";
 import { For, Show, createSignal, type JSX } from "solid-js";
 import { formatDuration, formatReset, fmtDelta, stamp } from "./format.js";
-import { matchProvider, providerDefs } from "./providers.js";
+import { matchProvider, providerDefs, type ProviderDef } from "./providers.js";
 import { ProviderUsage } from "./rpc.js";
-import type { ProviderFailure, ProviderState, Snapshot } from "./types.js";
+import type { ProviderFailure, ProviderState, Snapshot, UsageSegment } from "./types.js";
 import { EMPTY_SNAPSHOT } from "./types.js";
 import { parseSnapshot } from "./validate.js";
 
 const INITIAL_LOAD_ATTEMPTS = 10;
 const REFRESH_TIMEOUT_MS = 15_000;
+const BAR_WIDTH = 20;
+const NAME_WIDTH = 12;
 
 const FAILURE_LABELS: Record<string, string> = {
 	no_key: "无key",
@@ -45,6 +50,17 @@ function segmentTone(percent: number): "success" | "warning" | "error" {
 	return percent >= 85 ? "error" : percent >= 60 ? "warning" : "success";
 }
 
+/** Worst severity across windows, used for the bolt and summary colour. */
+function worstTone(segments: readonly UsageSegment[]): "success" | "warning" | "error" {
+	let tone: "success" | "warning" | "error" = "success";
+	for (const seg of segments) {
+		const next = segmentTone(seg.percent);
+		if (next === "error") return "error";
+		if (next === "warning") tone = "warning";
+	}
+	return tone;
+}
+
 function failureLabel(state: ProviderFailure): string {
 	if (state.code === "rate_limit" && state.retryAt) {
 		const remainingMs = Date.parse(state.retryAt) - Date.now();
@@ -53,6 +69,23 @@ function failureLabel(state: ProviderFailure): string {
 		}
 	}
 	return FAILURE_LABELS[state.code] ?? "查询失败";
+}
+
+/** Splits a progress bar into filled/empty runs so each can be coloured. */
+function barParts(percent: number, width = BAR_WIDTH): { filled: string; empty: string } {
+	const cells = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
+	return { filled: "█".repeat(cells), empty: "░".repeat(width - cells) };
+}
+
+/** `→ 重置 21:40（剩 3h）`; caller prefixes the separator space. */
+function resetSuffix(seg: UsageSegment, now: Date): string {
+	if (!seg.reset) return "";
+	const time = formatReset(seg.reset, now);
+	const remainingMs = Date.parse(seg.reset) - now.getTime();
+	if (Number.isFinite(remainingMs) && remainingMs > 0) {
+		return `→ 重置 ${time}（剩 ${formatDuration(remainingMs / 1000)}）`;
+	}
+	return `→ 重置 ${time}`;
 }
 
 export default Plugin.define({
@@ -110,30 +143,56 @@ export default Plugin.define({
 			return route.type === "session" ? route.sessionID : undefined;
 		};
 
+		// --- footer ---------------------------------------------------------------
+
 		function statusText(state: ProviderState): JSX.Element {
 			if (!state.ok) {
 				return <text fg={color.muted}>⚡ {failureLabel(state)}</text>;
 			}
-			const data = state.data;
-			if (data.kind === "balance") {
-				return <text fg={toneColor(data.tone)}>{data.text}</text>;
+			if (state.data.kind === "balance") {
+				return <text fg={toneColor(state.data.tone)}>{state.data.text}</text>;
 			}
 			const now = new Date();
+			const segments = state.data.segments;
 			return (
 				<box flexDirection="row" flexShrink={0}>
-					<text fg={color.muted}>⚡ </text>
-					<For each={data.segments}>
+					<text fg={toneColor(worstTone(segments))}>⚡ </text>
+					<For each={segments}>
 						{(seg, index) => (
 							<>
-								{index() > 0 ? <text fg={color.muted}> </text> : null}
+								{index() > 0 ? <text fg={color.muted}> · </text> : null}
 								<text fg={toneColor(segmentTone(seg.percent))}>
-									{seg.label}:{seg.percent}%
+									{seg.label} {seg.percent}%
 								</text>
-								{seg.delta ? <text fg={color.muted}>({fmtDelta(seg.delta)}%)</text> : null}
-								{seg.reset ? <text fg={color.muted}>→{formatReset(seg.reset, now)}</text> : null}
+								{seg.delta ? <text fg={color.muted}> {fmtDelta(seg.delta)}%</text> : null}
+								{seg.reset ? <text fg={color.muted}> →{formatReset(seg.reset, now)}</text> : null}
 							</>
 						)}
 					</For>
+				</box>
+			);
+		}
+
+		// --- dialog ----------------------------------------------------------------
+
+		/** One window as a coloured progress-bar row. */
+		function BarRow(props: { seg: UsageSegment }): JSX.Element {
+			const now = new Date();
+			const parts = barParts(props.seg.percent);
+			const tone = segmentTone(props.seg.percent);
+			const percent = `${String(props.seg.percent).padStart(3)}%`;
+			return (
+				<box flexDirection="row">
+					<text fg={color.base}>{`${props.seg.label.padEnd(4)} `}</text>
+					<text fg={toneColor(tone)}>{parts.filled}</text>
+					<text fg={color.muted}>{parts.empty}</text>
+					<text fg={toneColor(tone)}>{` ${percent}`}</text>
+					{props.seg.delta ? (
+						<text fg={color.muted}>{` ${fmtDelta(props.seg.delta)}%`}</text>
+					) : null}
+					{props.seg.status ? <text fg={color.warning}>{` ⚠${props.seg.status}`}</text> : null}
+					{props.seg.note ? <text fg={color.muted}>{` ${props.seg.note}`}</text> : null}
+					<text fg={color.muted}>{` ${resetSuffix(props.seg, now)}`}</text>
 				</box>
 			);
 		}
@@ -147,76 +206,85 @@ export default Plugin.define({
 				if (seg.etaMs !== undefined) part += `（按当前速率 ~${formatDuration(seg.etaMs / 1000)}后用满）`;
 				parts.push(part);
 			}
-			return parts.length ? `• 趋势: ${parts.join(" · ")}` : undefined;
+			return parts.length ? parts.join(" · ") : undefined;
 		}
 
-		interface Block {
-			title: string;
-			lines: string[];
+		/** Detailed block for the single-provider view. */
+		function DetailBlock(props: { def: ProviderDef; state: ProviderState }): JSX.Element {
+			const failure = () => (props.state.ok ? undefined : props.state);
+			const percent = () => (props.state.ok && props.state.data.kind === "percent" ? props.state.data : undefined);
+			const balance = () => (props.state.ok && props.state.data.kind === "balance" ? props.state.data : undefined);
+			const extras = () => (props.state.ok ? props.state.data.detailLines : []);
+			const updatedAt = () => (props.state.ok ? stamp(new Date(props.state.fetchedAt)) : undefined);
+			return (
+				<box flexDirection="column">
+					<text fg={color.base}>{props.state.ok ? props.state.data.title : `${props.def.title} — ✗`}</text>
+					<Show when={percent()}>
+						{(data) => (
+							<box flexDirection="column">
+								<For each={data().segments}>{(seg) => <BarRow seg={seg} />}</For>
+							</box>
+						)}
+					</Show>
+					<Show when={balance()}>
+						{(data) => <text fg={toneColor(data().tone)}>{data().text}</text>}
+					</Show>
+					<For each={extras()}>{(line) => <text fg={color.muted}>· {line}</text>}</For>
+					<Show when={trendLine(props.state)}>
+						{(line) => <text fg={color.muted}>· 趋势 {line()}</text>}
+					</Show>
+					<Show when={failure()}>
+						{(fail) => (
+							<text fg={color.error}>
+								✗ {failureLabel(fail())} — {fail().error}
+							</text>
+						)}
+					</Show>
+					<Show when={updatedAt()}>
+						{(stampText) => <text fg={color.muted}>更新于 {stampText()}</text>}
+					</Show>
+				</box>
+			);
 		}
 
-		/** One-line summary used by the compact `/quota all` view. */
-		function summaryLine(state: ProviderState): string {
-			if (!state.ok) return `✗ ${failureLabel(state)}`;
-			if (state.data.kind === "balance") return state.data.text;
-			return state.data.segments
-				.map((seg) => `${seg.label} ${seg.percent}%${seg.delta ? `(${fmtDelta(seg.delta)}%)` : ""}`)
-				.join(" · ");
-		}
-
-		function detailBlocks(snapshot: Snapshot, onlyName?: string): Block[] {
-			const blocks: Block[] = [];
-			for (const def of defs) {
-				if (onlyName && def.name !== onlyName) continue;
-				const state = snapshot.providers[def.name];
-				if (!state) continue;
-
-				// The "all" view stays one line per provider so the dialog fits
-				// whatever height the host gives it; the single-provider view
-				// keeps the full detail lines.
-				if (!onlyName) {
-					blocks.push({ title: def.title, lines: [summaryLine(state)] });
-					continue;
-				}
-				if (!state.ok) {
-					blocks.push({
-						title: `${def.title} — ✗`,
-						lines: [`• ${failureLabel(state)}: ${state.error}`],
-					});
-					continue;
-				}
-				const lines = [...state.data.detailLines];
-				const trend = trendLine(state);
-				if (trend) lines.push(trend);
-				lines.push(`• 更新于 ${stamp(new Date(state.fetchedAt))}`);
-				blocks.push({ title: state.data.title, lines });
-			}
-			return blocks;
+		/** One aligned line for the `/quota all` view. */
+		function SummaryRow(props: { def: ProviderDef; state: ProviderState }): JSX.Element {
+			const summary = (): { text: string; tone: "success" | "warning" | "error" } => {
+				const state = props.state;
+				if (!state.ok) return { text: `✗ ${failureLabel(state)}`, tone: "error" };
+				if (state.data.kind === "balance") return { text: state.data.text, tone: state.data.tone };
+				return {
+					text: state.data.segments
+						.map((seg) => `${seg.label} ${seg.percent}%${seg.delta ? `(${fmtDelta(seg.delta)}%)` : ""}`)
+						.join(" · "),
+					tone: worstTone(state.data.segments),
+				};
+			};
+			const row = summary();
+			return (
+				<box flexDirection="row" gap={1}>
+					<text fg={color.muted}>{props.def.name.padEnd(NAME_WIDTH)}</text>
+					<text fg={toneColor(row.tone)}>{row.text}</text>
+				</box>
+			);
 		}
 
 		function Details(props: { onlyName?: string; sessionID?: string }): JSX.Element {
-			const blocks = () => {
-				const list = detailBlocks(snap(), props.onlyName);
-				if (list.length) return list;
-				if (props.onlyName) {
-					return [
-						{
-							title: "模型额度",
-							lines: ["• 当前提供商未配置 API Key，或暂无对应的用量查询接口"],
-						},
-					];
-				}
-				return [
-					{
-						title: "模型额度",
-						lines: ["• 暂无数据：没有发现已配置 key 的提供商（/connect 连接后再试）"],
-					},
-				];
+			const visible = () => {
+				const snapshot = snap();
+				return defs
+					.filter((def) => (props.onlyName ? def.name === props.onlyName : true))
+					.map((def) => ({ def, state: snapshot.providers[def.name] }))
+					.filter((entry): entry is { def: ProviderDef; state: ProviderState } => entry.state !== undefined);
 			};
+			const emptyHint = () =>
+				props.onlyName
+					? "当前提供商未配置 API Key，或暂无对应的用量查询接口"
+					: "暂无数据：没有发现已配置 key 的提供商（/connect 连接后再试）";
 			const sessionCost = () => {
 				if (!props.sessionID) return undefined;
 				const cost = context.data.session.cost(props.sessionID);
-				return Number.isFinite(cost) && cost > 0 ? `• 本会话成本 $${cost.toFixed(3)}` : undefined;
+				return Number.isFinite(cost) && cost > 0 ? `本会话成本 $${cost.toFixed(3)}` : undefined;
 			};
 			return (
 				<box
@@ -228,19 +296,23 @@ export default Plugin.define({
 					gap={1}
 					backgroundColor={theme.background.base}
 				>
-					<text fg={color.base}>模型额度明细</text>
-					<For each={blocks()}>
-						{(block) => (
-							<box flexDirection="column">
-								<text fg={color.muted}>{block.title}</text>
-								<For each={block.lines}>{(line) => <text fg={color.base}>{line}</text>}</For>
-							</box>
-						)}
-					</For>
-					<Show when={sessionCost()}>{(line) => <text fg={color.base}>{line()}</text>}</Show>
-					<text fg={color.muted}>
-						更新于 {stamp(new Date(snap().updatedAt))} · /quota all 查看全部
-					</text>
+					<box flexDirection="row" gap={1}>
+						<text fg={color.base}>模型额度明细</text>
+						<text fg={color.muted}>· /quota all 查看全部</text>
+					</box>
+					<Show when={visible().length > 0} fallback={<text fg={color.muted}>{emptyHint()}</text>}>
+						<For each={visible()}>
+							{(entry) =>
+								props.onlyName ? (
+									<DetailBlock def={entry.def} state={entry.state} />
+								) : (
+									<SummaryRow def={entry.def} state={entry.state} />
+								)
+							}
+						</For>
+					</Show>
+					<Show when={sessionCost()}>{(line) => <text fg={color.muted}>{line()}</text>}</Show>
+					<text fg={color.muted}>更新于 {stamp(new Date(snap().updatedAt))}</text>
 				</box>
 			);
 		}

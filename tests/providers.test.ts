@@ -34,7 +34,10 @@ test("opencode parses rolling/weekly/monthly windows", async () => {
 		["7d", 0],
 		["30d", 88],
 	]);
-	expect(data.detailLines.some((l) => l.includes("[limited]"))).toBe(true);
+	// Window states ride on the segment; windows are no longer text lines.
+	expect(data.segments[2].status).toBe("limited");
+	expect(data.segments[0].status).toBeUndefined();
+	expect(data.detailLines).toEqual([]);
 });
 
 test("opencode returns undefined for an empty payload", async () => {
@@ -86,6 +89,17 @@ test("a non-JSON body fails with a descriptive error", async () => {
 		})) as unknown as typeof fetch;
 	await expect(defByName("opencode").fetch("key", new AbortController().signal, {})).rejects.toThrow(
 		/JSON/,
+	);
+});
+
+test("oversized response bodies are refused before parsing", async () => {
+	globalThis.fetch = (async () =>
+		new Response("x".repeat(100), {
+			status: 200,
+			headers: { "content-type": "application/json", "content-length": String(50_000_000) },
+		})) as unknown as typeof fetch;
+	await expect(defByName("opencode").fetch("key", new AbortController().signal, {})).rejects.toThrow(
+		/过大/,
 	);
 });
 

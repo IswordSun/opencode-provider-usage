@@ -72,8 +72,35 @@ describe("parseSnapshot", () => {
 		expect(stale.fetchedAt).toBeDefined();
 	});
 
-	test("strips undefined fields so the result survives JSON round-trips", () => {
-		const snapshot = parseSnapshot({
+	test("segment status and note are kept but length-capped", () => {
+	const snapshot = parseSnapshot({
+		updatedAt: "2030-01-01T00:00:00.000Z",
+		providers: {
+			opencode: {
+				ok: true,
+				fetchedAt: "2030-01-01T00:00:01.000Z",
+				data: {
+					kind: "percent",
+					title: "t",
+					segments: [
+						{ label: "5h", percent: 10, status: "limited", note: "已用 12/240 积分" },
+						{ label: "7d", percent: 20, status: "x".repeat(40), note: "y".repeat(200) },
+						{ label: "30d", percent: 30, status: 42, note: null },
+					],
+				},
+			},
+		},
+	});
+	const opencode = snapshot.providers.opencode!;
+	if (!opencode.ok || opencode.data.kind !== "percent") throw new Error("unreachable");
+	expect(opencode.data.segments[0]).toMatchObject({ status: "limited", note: "已用 12/240 积分" });
+	expect(opencode.data.segments[1].status).toHaveLength(16);
+	expect(opencode.data.segments[1].note).toHaveLength(48);
+	expect(opencode.data.segments[2].status).toBeUndefined();
+	expect(opencode.data.segments[2].note).toBeUndefined();
+});
+
+test("strips undefined fields so the result survives JSON round-trips", () => {		const snapshot = parseSnapshot({
 			updatedAt: "2030-01-01T00:00:00.000Z",
 			providers: {
 				opencode: {
