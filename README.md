@@ -8,7 +8,9 @@ V1 双文件方案（`plugins.v1.bak/quota-display.js` + `quota-statusbar.tsx`�
 
 ## 支持的提供商
 
-| 提供商 | 内容 | 接口 |
+插件内置的是各家的**用量接口适配器**，实际显示哪些完全由你的配置决定——**有可解析 key 的才进快照、才显示**：
+
+| 适配器 | 内容 | 接口 |
 |---|---|---|
 | opencode / opencode-go | 订阅额度（5h / 7d / 30d） | `opencode.ai/zen/go/v1/usage` |
 | deepseek | 账户余额（CNY / USD） | `api.deepseek.com/user/balance` |
@@ -16,9 +18,16 @@ V1 双文件方案（`plugins.v1.bak/quota-display.js` + `quota-statusbar.tsx`�
 | zai / zhipuai | GLM Coding Plan 积分（5h / 周 / 月） | `open.bigmodel.cn` / `api.z.ai` |
 | openai-codex | ChatGPT 订阅额度（主 / 次窗口） | `chatgpt.com/backend-api/wham/usage` |
 
-凭据优先从 opencode 的 integration API 解析（`ctx.integration.connection.active` + `resolve`），
-其次环境变量（`OPENCODE_API_KEY` / `DEEPSEEK_API_KEY` / `STEPFUN_API_KEY` / `ZHIPU_API_KEY` …），
-最后回退到旧的 `~/.local/share/opencode/auth.json`。没有 key 的提供商标注 `无key`，不会静默隐藏。
+### 发现规则
+
+每次刷新前先做发现，而不是遍历固定列表：
+
+1. 枚举 opencode 里实际配置的服务商（`ctx.provider.list()`），按 **integration id** 和 **baseURL 主机名** 匹配到已知适配器——所以你自己在 `opencode.jsonc` 里加的、指向已知端点的自定义服务商也会被认出来；
+2. 凭据解析顺序：integration 连接 → 适配器声明的环境变量 → 旧 `auth.json`；
+3. 解析不出 key 的适配器**不进快照**（页脚、`/quota`、`/quota all` 一律不出现，不会有 `无key` 噪音）；
+4. key 被移除后，该提供商会在下一轮刷新中自动从快照里消失。
+
+新增一家没有适配器的服务商时，只需在 `src/providers.ts` 里加一个 `ids`/`hosts`/`fetch` 定义即可，其余逻辑不用动。
 
 ## 结构
 
@@ -52,8 +61,8 @@ opencode v2 的插件分两半，通过 RPC 通信：
 
 - 页脚状态行按当前模型自动切换：额度类显示各窗口百分比、趋势与重置时间，余额类显示金额（按阈值变色）。
 - 命令面板（`ctrl+p`）中的 **Show provider usage**，或输入 `/quota` 打开当前提供商的明细。
-- `/quota all` 并列显示全部提供商，每家一行摘要（额度窗口 + 趋势 / 余额 / ✗ 失败原因）。
-- 失败显式呈现：`⚡ key无效` / `⚡ 限流退避中 12m` / `⚡ 查询失败` / `⚡ 无key`，不会用旧数据冒充最新值。
+- `/quota all` 并列显示**全部有 key 的**提供商，每家一行摘要（额度窗口 + 趋势 / 余额 / ✗ 失败原因）。
+- 失败显式呈现：`⚡ key无效` / `⚡ 限流退避中 12m` / `⚡ 查询失败`，不会用旧数据冒充最新值。
 - 429 每提供商独立退避（10 分钟起，翻倍至 60 分钟），状态栏会显示剩余退避时长。
 - 趋势样本持久化在插件 storage 中，展示 1 小时内的百分点变化与预计用满时间；重启后快照与样本从 storage 播种，首秒即有数据。
 

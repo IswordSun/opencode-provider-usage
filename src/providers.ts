@@ -42,24 +42,35 @@ export interface ProviderDef {
 	name: string;
 	/** Human readable title for detail views. */
 	title: string;
-	/** Integration ids tried in order when resolving a credential. */
-	integrationIDs: string[];
+	/**
+	 * Integration / provider ids this adapter covers. Doubles as the ordered
+	 * candidate list when resolving a credential.
+	 */
+	ids: readonly string[];
+	/** Provider base-URL hosts this adapter covers. */
+	hosts: readonly string[];
 	/** Environment variables holding the key, tried after integrations. */
-	envKeys: string[];
+	envKeys: readonly string[];
 	/** Legacy `auth.json` provider ids, tried last. */
-	authIDs: string[];
-	/** Whether this provider serves the given model. */
-	matches(context: ProviderContext): boolean;
+	authIDs: readonly string[];
 	fetch(key: string, signal: AbortSignal, context: ProviderContext): Promise<UsageData | undefined>;
 }
 
-function hostIs(context: ProviderContext, host: string): boolean {
-	if (!context.baseUrl) return false;
+/** Hostname of a base URL, or undefined when it cannot be parsed. */
+export function hostOf(baseUrl: string | undefined): string | undefined {
+	if (!baseUrl) return undefined;
 	try {
-		return new URL(context.baseUrl).hostname === host;
+		return new URL(baseUrl).hostname;
 	} catch {
-		return false;
+		return undefined;
 	}
+}
+
+/** Declarative match: provider id or base-URL host belongs to this adapter. */
+export function matchesDef(def: ProviderDef, context: ProviderContext): boolean {
+	if (context.providerID !== undefined && def.ids.includes(context.providerID)) return true;
+	const host = hostOf(context.baseUrl);
+	return host !== undefined && def.hosts.includes(host);
 }
 
 /** Parses a response body as JSON, throwing a descriptive error on garbage. */
@@ -102,11 +113,10 @@ function opencodeDef(): ProviderDef {
 	return {
 		name: "opencode",
 		title: "OpenCode 额度",
-		integrationIDs: ["opencode-go", "opencode"],
+		ids: ["opencode-go", "opencode"],
 		envKeys: ["OPENCODE_API_KEY"],
 		authIDs: ["opencode-go", "opencode"],
-		matches: (c) =>
-			c.providerID === "opencode" || c.providerID === "opencode-go" || hostIs(c, "opencode.ai"),
+		hosts: ["opencode.ai"],
 		async fetch(key, signal) {
 			const res = await fetch(OPENCODE_USAGE_URL, {
 				headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
@@ -153,10 +163,10 @@ function deepseekDef(): ProviderDef {
 	return {
 		name: "deepseek",
 		title: "DeepSeek 余额",
-		integrationIDs: ["deepseek"],
+		ids: ["deepseek"],
 		envKeys: ["DEEPSEEK_API_KEY"],
 		authIDs: ["deepseek"],
-		matches: (c) => c.providerID === "deepseek" || hostIs(c, "api.deepseek.com"),
+		hosts: ["api.deepseek.com"],
 		async fetch(key, signal) {
 			const res = await fetch(DEEPSEEK_BALANCE_URL, {
 				headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
@@ -221,11 +231,10 @@ function stepfunDef(): ProviderDef {
 	return {
 		name: "stepfun",
 		title: "StepFun 余额",
-		integrationIDs: ["stepfun", "stepfun-ai"],
+		ids: ["stepfun", "stepfun-ai"],
 		envKeys: ["STEPFUN_API_KEY"],
 		authIDs: ["stepfun"],
-		matches: (c) =>
-			c.providerID === "stepfun" || c.providerID === "stepfun-ai" || hostIs(c, "api.stepfun.com"),
+		hosts: ["api.stepfun.com"],
 		async fetch(key, signal) {
 			const res = await fetch(STEPFUN_ACCOUNT_URL, {
 				headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
@@ -282,13 +291,10 @@ function zaiDef(): ProviderDef {
 	return {
 		name: "zai",
 		title: "GLM Coding Plan 额度",
-		integrationIDs: ids,
+		ids: [...ids],
 		envKeys: ["ZHIPU_API_KEY", "ZAI_API_KEY"],
 		authIDs: ids,
-		matches: (c) =>
-			(c.providerID !== undefined && ids.includes(c.providerID)) ||
-			hostIs(c, "open.bigmodel.cn") ||
-			hostIs(c, "api.z.ai"),
+		hosts: ["open.bigmodel.cn", "api.z.ai", "bigmodel.cn"],
 		async fetch(key, signal, context) {
 			const request = async (url: string): Promise<UsageData | undefined> => {
 				// GLM quota endpoint expects the raw key in Authorization (no "Bearer").
@@ -410,10 +416,10 @@ function openaiCodexDef(): ProviderDef {
 	return {
 		name: "openai-codex",
 		title: "OpenAI Codex 额度",
-		integrationIDs: ["openai-codex", "openai"],
+		ids: ["openai-codex", "codex"],
 		envKeys: [],
 		authIDs: ["openai-codex"],
-		matches: (c) => Boolean(c.providerID?.includes("codex")) || hostIs(c, "chatgpt.com"),
+		hosts: ["chatgpt.com"],
 		async fetch(accessToken, signal) {
 			const accountId = codexAccountId(accessToken);
 			if (!accountId) return undefined;
@@ -491,5 +497,5 @@ export function matchProvider(
 	defs: readonly ProviderDef[],
 	context: ProviderContext,
 ): ProviderDef | undefined {
-	return defs.find((def) => def.matches(context));
+	return defs.find((def) => matchesDef(def, context));
 }

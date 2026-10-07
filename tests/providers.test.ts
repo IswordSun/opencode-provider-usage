@@ -104,6 +104,18 @@ test("matchProvider selects by provider id and base url", () => {
 	expect(matchProvider(defs, { providerID: "opencode-go" })?.name).toBe("opencode");
 	expect(matchProvider(defs, { providerID: "deepseek" })?.name).toBe("deepseek");
 	expect(matchProvider(defs, { providerID: "zhipuglm" })?.name).toBe("zai");
+	expect(matchProvider(defs, { providerID: "openai-codex" })?.name).toBe("openai-codex");
 	expect(matchProvider(defs, { baseUrl: "https://api.stepfun.com/v1" })?.name).toBe("stepfun");
 	expect(matchProvider(defs, { providerID: "unknown" })).toBeUndefined();
+});
+
+test("custom providers pointing at a known host match its adapter", () => {
+	const defs = providerDefs();
+	// A hand-written opencode.jsonc provider with a bigmodel base URL maps to zai.
+	expect(matchProvider(defs, { providerID: "myglm", baseUrl: "https://open.bigmodel.cn/api/paas/v4" })?.name).toBe("zai");
+	expect(matchProvider(defs, { providerID: "myzai", baseUrl: "https://api.z.ai/api/paas/v4" })?.name).toBe("zai");
+	// A regular OpenAI API key is not a ChatGPT subscription token.
+	expect(matchProvider(defs, { providerID: "openai", baseUrl: "https://api.openai.com/v1" })).toBeUndefined();
+	// Malformed base URLs never match.
+	expect(matchProvider(defs, { providerID: "weird", baseUrl: "not a url" })).toBeUndefined();
 });

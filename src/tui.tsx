@@ -198,7 +198,20 @@ export default Plugin.define({
 			const blocks = () => {
 				const list = detailBlocks(snap(), props.onlyName);
 				if (list.length) return list;
-				return [{ title: "模型额度", lines: ["• 暂无数据（等待首次刷新或检查 API Key）"] }];
+				if (props.onlyName) {
+					return [
+						{
+							title: "模型额度",
+							lines: ["• 当前提供商未配置 API Key，或暂无对应的用量查询接口"],
+						},
+					];
+				}
+				return [
+					{
+						title: "模型额度",
+						lines: ["• 暂无数据：没有发现已配置 key 的提供商（/connect 连接后再试）"],
+					},
+				];
 			};
 			const sessionCost = () => {
 				if (!props.sessionID) return undefined;

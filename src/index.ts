@@ -28,7 +28,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Plugin } from "@opencode/plugin";
 import { Backoff } from "./backoff.js";
-import { providerDefs, type ProviderDef } from "./providers.js";
+import { hostOf, providerDefs, type ProviderDef } from "./providers.js";
 import { ProviderUsage } from "./rpc.js";
 import { SampleStore } from "./samples.js";
 import type { FailureCode, PercentUsage, ProviderState, Snapshot, UsageData } from "./types.js";
@@ -49,9 +49,26 @@ interface AuthEntry {
 	key?: string;
 }
 
+/** Credential request: integration candidates first, then env, then legacy. */
+export interface CredentialRequest {
+	readonly integrationIDs: readonly string[];
+	readonly envKeys: readonly string[];
+	readonly authIDs: readonly string[];
+}
+
+/** A provider as configured in opencode, normalized for discovery. */
+export interface ProviderSource {
+	readonly id: string;
+	readonly integrationID?: string;
+	readonly baseURL?: string;
+	readonly disabled: boolean;
+}
+
 interface Subscriber {
 	/** Resolve a credential, or undefined when this instance cannot. */
-	readonly resolveKey: (def: ProviderDef) => Promise<string | undefined>;
+	readonly resolveKey: (request: CredentialRequest) => Promise<string | undefined>;
+	/** Providers configured at this instance's location. */
+	readonly listProviders: () => Promise<ProviderSource[]>;
 	/** Persist the snapshot into this instance's plugin storage. */
 	readonly persist: (snapshot: Snapshot) => void;
 	/** Persist trend samples into this instance's plugin storage. */
@@ -132,16 +149,60 @@ function logTransition(def: ProviderDef, state: ProviderState): void {
 	}
 }
 
-async function resolveKeyAny(def: ProviderDef): Promise<string | undefined> {
+async function resolveKeyAny(request: CredentialRequest): Promise<string | undefined> {
 	for (const subscriber of subscribers) {
 		try {
-			const key = await subscriber.resolveKey(def);
+			const key = await subscriber.resolveKey(request);
 			if (key) return key;
 		} catch {
 			// Try the next subscriber.
 		}
 	}
 	return undefined;
+}
+
+/** Collects the providers configured across every location, deduplicated. */
+async function collectProviderSources(): Promise<ProviderSource[]> {
+	const byKey = new Map<string, ProviderSource>();
+	for (const subscriber of subscribers) {
+		let list: ProviderSource[];
+		try {
+			list = await subscriber.listProviders();
+		} catch {
+			continue;
+		}
+		for (const source of list) {
+			if (!source?.id) continue;
+			byKey.set(`${source.id}\0${source.integrationID ?? ""}\0${source.baseURL ?? ""}`, source);
+		}
+	}
+	return [...byKey.values()];
+}
+
+/**
+ * Discovers which known usage adapters are actually usable: an adapter is
+ * included only when a credential can be resolved for it. Matching uses the
+ * provider's integration id and base-URL host, so custom providers pointing
+ * at a known endpoint are picked up without configuration. Adapters without
+ * a key are not part of the snapshot at all.
+ */
+async function discoverKeyedDefs(): Promise<Array<{ def: ProviderDef; key: string }>> {
+	const sources = await collectProviderSources();
+	const keyed: Array<{ def: ProviderDef; key: string }> = [];
+	for (const def of defs) {
+		const matched = sources.filter((source) => {
+			if (source.disabled) return false;
+			if (def.ids.includes(source.integrationID ?? source.id)) return true;
+			const host = hostOf(source.baseURL);
+			return host !== undefined && def.hosts.includes(host);
+		});
+		// Sources matched by host/integration are tried first, then the
+		// adapter's own id aliases (connected integrations, legacy auth).
+		const integrationIDs = [...new Set([...matched.map((s) => s.integrationID ?? s.id), ...def.ids])];
+		const key = await resolveKeyAny({ integrationIDs, envKeys: def.envKeys, authIDs: def.authIDs });
+		if (key) keyed.push({ def, key });
+	}
+	return keyed;
 }
 
 let legacyAuthCache: { at: number; value: Record<string, AuthEntry> | undefined } | undefined;
@@ -205,7 +266,7 @@ function classify(err: unknown): { code: FailureCode; error: string } {
 	return { code: "network", error: `查询失败（${err instanceof Error ? err.message : "网络异常或超时"}）` };
 }
 
-async function refreshProvider(def: ProviderDef): Promise<ProviderState> {
+async function refreshProvider(def: ProviderDef, key: string): Promise<ProviderState> {
 	const previous = states.get(def.name);
 
 	const remaining = backoff.remaining(def.name);
@@ -226,18 +287,8 @@ async function refreshProvider(def: ProviderDef): Promise<ProviderState> {
 		return failure;
 	}
 
-	const key = await resolveKeyAny(def);
-	if (abort?.signal.aborted) return previous ?? { ok: false, code: "network", error: "已停止", fetchedAt: new Date().toISOString() };
-	if (!key) {
-		const failure: ProviderState = {
-			ok: false,
-			code: "no_key",
-			error: "未配置 API Key",
-			fetchedAt: new Date().toISOString(),
-		};
-		states.set(def.name, failure);
-		logTransition(def, failure);
-		return failure;
+	if (abort?.signal.aborted) {
+		return previous ?? { ok: false, code: "network", error: "已停止", fetchedAt: new Date().toISOString() };
 	}
 
 	try {
@@ -293,7 +344,16 @@ function noteSamplesChanged(): void {
 
 async function doRefresh(): Promise<Snapshot> {
 	try {
-		await Promise.all(defs.map((def) => refreshProvider(def)));
+		const keyed = await discoverKeyedDefs();
+		const keyedNames = new Set(keyed.map((entry) => entry.def.name));
+		// A provider whose key disappeared leaves the snapshot entirely.
+		for (const name of [...states.keys()]) {
+			if (keyedNames.has(name)) continue;
+			states.delete(name);
+			lastGood.delete(name);
+			loggedState.delete(name);
+		}
+		await Promise.all(keyed.map(({ def, key }) => refreshProvider(def, key)));
 	} catch (err) {
 		log("刷新循环异常", err instanceof Error ? err.message : err);
 	}
@@ -340,8 +400,8 @@ export default Plugin.define({
 		});
 
 		const subscriber: Subscriber = {
-			resolveKey: async (def) => {
-				for (const id of def.integrationIDs) {
+			resolveKey: async (request) => {
+				for (const id of request.integrationIDs) {
 					try {
 						const connection = await ctx.integration.connection.active(id);
 						if (!connection) continue;
@@ -353,16 +413,30 @@ export default Plugin.define({
 						// Integration id not registered — try the next candidate.
 					}
 				}
-				for (const name of def.envKeys) {
+				for (const name of request.envKeys) {
 					const value = process.env[name];
 					if (value) return value;
 				}
 				const legacy = readLegacyAuth();
-				for (const id of def.authIDs) {
+				for (const id of request.authIDs) {
 					const value = legacy?.[id]?.key;
 					if (typeof value === "string" && value) return value;
 				}
 				return undefined;
+			},
+			listProviders: async () => {
+				const output = await ctx.provider.list();
+				const list = Array.isArray(output) ? output : output.data;
+				return list
+					.filter((provider) => typeof provider?.id === "string")
+					.map((provider) => ({
+						id: provider.id,
+						integrationID:
+							typeof provider.integrationID === "string" ? provider.integrationID : undefined,
+						baseURL:
+							typeof provider.settings?.baseURL === "string" ? provider.settings.baseURL : undefined,
+						disabled: provider.activation === "disabled",
+					}));
 			},
 			persist: (snapshot) => {
 				void ctx.storage.set("snapshot", snapshot as never).catch(() => {});
@@ -379,7 +453,8 @@ export default Plugin.define({
 		ensureStarted();
 
 		// Seed the last persisted snapshot so `get` answers immediately
-		// after a restart instead of returning an empty world.
+		// after a restart instead of returning an empty world. Providers
+		// without a key are never seeded (they must be rediscovered).
 		if (!seeded) {
 			seeded = true;
 			try {
@@ -387,6 +462,7 @@ export default Plugin.define({
 				const parsed = parseSnapshot(storedSnapshot);
 				for (const [name, state] of Object.entries(parsed.providers)) {
 					if (states.has(name)) continue;
+					if (!state.ok && state.code === "no_key") continue;
 					states.set(name, state);
 					if (state.ok) lastGood.set(name, state);
 				}
@@ -399,8 +475,8 @@ export default Plugin.define({
 			}
 		}
 
-		// Live-ish updates while a multi-turn run is in progress, plus a
-		// refresh when credentials change.
+		// Live-ish updates while a multi-turn run is in progress; credential,
+		// provider, integration, and config changes re-run discovery.
 		const events = new AbortController();
 		void (async () => {
 			try {
@@ -408,7 +484,13 @@ export default Plugin.define({
 					const type = event.type;
 					if (type === "session.idle" || type === "session.execution.succeeded") {
 						void refresh(false).catch(() => {});
-					} else if (type === "credential.updated" || type === "credential.switched") {
+					} else if (
+						type === "credential.updated" ||
+						type === "credential.switched" ||
+						type === "provider.updated" ||
+						type === "integration.updated" ||
+						type === "config.updated"
+					) {
 						legacyAuthCache = undefined;
 						void refresh(true).catch(() => {});
 					}
