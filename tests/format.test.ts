@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
 	bar,
+	barParts,
 	currencySymbol,
 	fmtDelta,
 	formatDuration,
@@ -43,4 +44,19 @@ test("bar fills proportionally", () => {
 	expect(bar(100, 10)).toBe("██████████");
 	expect(bar(0, 10)).toBe("░░░░░░░░░░");
 	expect(bar(50, 10)).toBe("█████░░░░░");
+});
+
+test("barParts renders half-block cells for finer granularity", () => {
+	expect(barParts(30, 5)).toEqual({ filled: "█▌", empty: "░░░" });
+	expect(barParts(10, 5)).toEqual({ filled: "▌", empty: "░░░░" });
+	expect(barParts(50, 5)).toEqual({ filled: "██▌", empty: "░░" });
+	expect(barParts(0, 5)).toEqual({ filled: "", empty: "░░░░░" });
+	expect(barParts(100, 5)).toEqual({ filled: "█████", empty: "" });
+});
+
+test("barParts clamps out-of-range percents", () => {
+	expect(barParts(150, 4).filled).toBe("████");
+	expect(barParts(-5, 4).filled).toBe("");
+	expect(barParts(Number.NaN, 4).filled).toBe("");
+	expect(barParts(30, 4).filled + barParts(30, 4).empty).toHaveLength(4);
 });

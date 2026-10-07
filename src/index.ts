@@ -23,7 +23,7 @@
  *   and logged, never propagated into opencode.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, appendFileSync, statSync, truncateSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Plugin } from "@opencode/plugin";
@@ -32,7 +32,7 @@ import { hostOf, providerDefs, type ProviderDef } from "./providers.js";
 import { ProviderUsage } from "./rpc.js";
 import { SampleStore } from "./samples.js";
 import type { FailureCode, PercentUsage, ProviderState, Snapshot, UsageData } from "./types.js";
-import { parseSnapshot } from "./validate.js";
+import { isStale, parseSnapshot } from "./validate.js";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const RETRY_DELAY_MS = 500;
@@ -42,8 +42,18 @@ const FETCH_ATTEMPTS = 2;
 const SAMPLES_SAVE_DEBOUNCE_MS = 30_000;
 const LEGACY_AUTH_CACHE_MS = 30_000;
 const MAX_LOGGED_DETAIL = 200;
+/**
+ * How long a cached "last good" result may stand in for a failing fetch
+ * before the failure is shown instead. Without this a revoked key keeps
+ * displaying its last balance forever.
+ */
+const CACHED_RESULT_TTL_MS = 15 * 60_000;
+/** Debug log size cap before truncation. */
+const DEBUG_LOG_MAX_BYTES = 1_000_000;
 
 const AUTH_PATH = join(homedir(), ".local/share/opencode/auth.json");
+const DEBUG_LOG_PATH = join(homedir(), ".local/share/opencode/log/provider-usage.log");
+const DEBUG = process.env.OPENCODE_PROVIDER_USAGE_DEBUG === "1";
 
 interface AuthEntry {
 	key?: string;
@@ -82,7 +92,21 @@ function log(message: string, detail?: unknown): void {
 		detail === undefined
 			? ""
 			: ` ${String(typeof detail === "string" ? detail : JSON.stringify(detail)).slice(0, MAX_LOGGED_DETAIL)}`;
-	console.log(`[provider-usage] ${message}${suffix}`);
+	const line = `[provider-usage] ${new Date().toISOString()} ${message}${suffix}`;
+	console.log(line);
+	// The plugin host has no logging channel, so opt-in debugging goes to a
+	// dedicated file (rotated by truncation) next to opencode's own logs.
+	if (!DEBUG) return;
+	try {
+		try {
+			if (statSync(DEBUG_LOG_PATH).size > DEBUG_LOG_MAX_BYTES) truncateSync(DEBUG_LOG_PATH);
+		} catch {
+			// First write or missing file.
+		}
+		appendFileSync(DEBUG_LOG_PATH, `${line}\n`);
+	} catch {
+		// Logging must never break the plugin.
+	}
 }
 
 function statusOf(err: unknown): number | undefined {
@@ -189,21 +213,24 @@ async function collectProviderSources(): Promise<ProviderSource[]> {
  */
 async function discoverKeyedDefs(): Promise<Array<{ def: ProviderDef; key: string }>> {
 	const sources = await collectProviderSources();
-	const keyed: Array<{ def: ProviderDef; key: string }> = [];
-	for (const def of defs) {
-		const matched = sources.filter((source) => {
-			if (source.disabled) return false;
-			if (def.ids.includes(source.integrationID ?? source.id)) return true;
-			const host = hostOf(source.baseURL);
-			return host !== undefined && def.hosts.includes(host);
-		});
-		// Sources matched by host/integration are tried first, then the
-		// adapter's own id aliases (connected integrations, legacy auth).
-		const integrationIDs = [...new Set([...matched.map((s) => s.integrationID ?? s.id), ...def.ids])];
-		const key = await resolveKeyAny({ integrationIDs, envKeys: def.envKeys, authIDs: def.authIDs });
-		if (key) keyed.push({ def, key });
-	}
-	return keyed;
+	const entries = await Promise.all(
+		defs.map(async (def) => {
+			const matched = sources.filter((source) => {
+				if (source.disabled) return false;
+				if (def.ids.includes(source.integrationID ?? source.id)) return true;
+				const host = hostOf(source.baseURL);
+				return host !== undefined && def.hosts.includes(host);
+			});
+			// Sources matched by host/integration are tried first, then the
+			// adapter's own id aliases (connected integrations, legacy auth).
+			const integrationIDs = [
+				...new Set([...matched.map((s) => s.integrationID ?? s.id), ...def.ids]),
+			];
+			const key = await resolveKeyAny({ integrationIDs, envKeys: def.envKeys, authIDs: def.authIDs });
+			return key ? { def, key } : undefined;
+		}),
+	);
+	return entries.filter((entry): entry is { def: ProviderDef; key: string } => entry !== undefined);
 }
 
 let legacyAuthCache: { at: number; value: Record<string, AuthEntry> | undefined } | undefined;
@@ -273,7 +300,7 @@ async function refreshProvider(def: ProviderDef, key: string): Promise<ProviderS
 	const remaining = backoff.remaining(def.name);
 	if (remaining > 0) {
 		const cached = lastGood.get(def.name);
-		if (cached) {
+		if (cached && !isStale(cached.fetchedAt, CACHED_RESULT_TTL_MS)) {
 			states.set(def.name, cached);
 			return cached;
 		}
@@ -324,7 +351,7 @@ async function refreshProvider(def: ProviderDef, key: string): Promise<ProviderS
 		if (status === 429) backoff.strike(def.name);
 		const { code, error } = classify(err);
 		const cached = lastGood.get(def.name);
-		if (cached) {
+		if (cached && !isStale(cached.fetchedAt, CACHED_RESULT_TTL_MS)) {
 			states.set(def.name, cached);
 			return cached;
 		}

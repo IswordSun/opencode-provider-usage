@@ -18,7 +18,7 @@
 
 import { Plugin } from "@opencode/plugin/tui";
 import { For, Show, createSignal, type JSX } from "solid-js";
-import { formatDuration, formatReset, fmtDelta, stamp } from "./format.js";
+import { barParts, formatDuration, formatReset, fmtDelta, stamp } from "./format.js";
 import { matchProvider, providerDefs, type ProviderDef } from "./providers.js";
 import { ProviderUsage } from "./rpc.js";
 import type { ProviderFailure, ProviderState, Snapshot, UsageSegment } from "./types.js";
@@ -27,6 +27,8 @@ import { parseSnapshot } from "./validate.js";
 
 const INITIAL_LOAD_ATTEMPTS = 10;
 const REFRESH_TIMEOUT_MS = 15_000;
+/** Safety re-pull cadence in case `updated` events were missed. */
+const SAFETY_POLL_MS = 120_000;
 const BAR_WIDTH = 20;
 const FOOTER_BAR_WIDTH = 5;
 const NAME_WIDTH = 12;
@@ -74,12 +76,6 @@ function failureLabel(state: ProviderFailure): string {
 	return FAILURE_LABELS[state.code] ?? "查询失败";
 }
 
-/** Splits a progress bar into filled/empty runs so each can be coloured. */
-function barParts(percent: number, width = BAR_WIDTH): { filled: string; empty: string } {
-	const cells = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
-	return { filled: "█".repeat(cells), empty: "░".repeat(width - cells) };
-}
-
 /** The window that binds hardest right now (highest percent). */
 function worstSegment(segments: readonly UsageSegment[]): UsageSegment | undefined {
 	let worst: UsageSegment | undefined;
@@ -118,6 +114,22 @@ export default Plugin.define({
 		};
 		const toneColor = (tone: "success" | "warning" | "error") => color[tone];
 
+		/** Terminal width, reactive on resize; narrow terminals drop the bars. */
+		const readWidth = (): number => {
+			const width = (context.renderer as { width?: unknown } | undefined)?.width;
+			return typeof width === "number" && width > 0 ? width : Number.POSITIVE_INFINITY;
+		};
+		const [termWidth, setTermWidth] = createSignal(readWidth());
+		const [costTick, setCostTick] = createSignal(0);
+		const onResize = (): void => {
+			setTermWidth(readWidth());
+		};
+		try {
+			context.renderer.on("resize", onResize);
+		} catch {
+			// Resize events unavailable; width refreshes on the safety poll.
+		}
+
 		// --- state ---------------------------------------------------------------
 
 		const applySnapshot = (input: unknown): void => {
@@ -125,26 +137,49 @@ export default Plugin.define({
 			setSnap(parseSnapshot(input));
 		};
 
-		// The server plugin may register its RPC slightly after the TUI starts;
-		// retry with backoff instead of giving up on the first failure.
+		const load = async (): Promise<boolean> => {
+			try {
+				const result = (await usage.get({})) as { snapshot?: unknown };
+				applySnapshot(result?.snapshot);
+				// Width is not always observable through resize events; refresh
+				// it whenever we re-poll so narrow/wide switches converge.
+				setTermWidth(readWidth());
+				return true;
+			} catch {
+				return false;
+			}
+		};
+
+		// The server plugin may register its RPC slightly after the TUI
+		// starts; retry with backoff instead of giving up on the first
+		// failure, and (re)try subscribing to updates once it answers.
+		let unsubscribe: (() => void) | undefined;
+		let subscribed = false;
+		const trySubscribe = (): void => {
+			if (disposed || subscribed) return;
+			try {
+				const stop = usage.events.on("updated", (event) => applySnapshot(event.data?.snapshot));
+				unsubscribe = stop;
+				subscribed = true;
+			} catch {
+				// RPC not registered yet.
+			}
+		};
+
 		void (async () => {
 			for (let attempt = 0; attempt < INITIAL_LOAD_ATTEMPTS && !disposed; attempt++) {
-				try {
-					const result = (await usage.get({})) as { snapshot?: unknown };
-					applySnapshot(result?.snapshot);
+				if (await load()) {
+					trySubscribe();
 					return;
-				} catch {
-					await sleep(Math.min(500 * 2 ** attempt, 8_000));
 				}
+				await sleep(Math.min(500 * 2 ** attempt, 8_000));
 			}
 		})();
 
-		let unsubscribe: (() => void) | undefined;
-		try {
-			unsubscribe = usage.events.on("updated", (event) => applySnapshot(event.data?.snapshot));
-		} catch {
-			// RPC not registered yet; the retry loop above will populate state.
-		}
+		// Safety net: re-pull on the server's polling cadence in case update
+		// events were missed (server restarted, subscription dropped).
+		const safetyPoll = setInterval(() => void load(), SAFETY_POLL_MS);
+		trySubscribe();
 
 		// --- helpers -------------------------------------------------------------
 
@@ -157,12 +192,6 @@ export default Plugin.define({
 
 		// --- footer ---------------------------------------------------------------
 
-		/** Terminal width when readable; narrow terminals drop the bars. */
-		const terminalWidth = (): number => {
-			const width = (context.renderer as { width?: unknown } | undefined)?.width;
-			return typeof width === "number" && width > 0 ? width : Number.POSITIVE_INFINITY;
-		};
-
 		function statusText(state: ProviderState): JSX.Element {
 			if (!state.ok) {
 				return <text fg={color.muted}>⚡ {failureLabel(state)}</text>;
@@ -173,20 +202,21 @@ export default Plugin.define({
 			const now = new Date();
 			const segments = state.data.segments;
 			const worst = worstSegment(segments);
-			const withBars = terminalWidth() >= NARROW_WIDTH;
+			const withBars = termWidth() >= NARROW_WIDTH;
 			return (
 				<box flexDirection="row" flexShrink={0}>
 					<text fg={toneColor(worstTone(segments))}>⚡ </text>
 					<For each={segments}>
 						{(seg, index) => {
 							const tone = segmentTone(seg.percent);
+							const parts = barParts(seg.percent, FOOTER_BAR_WIDTH);
 							return (
 								<>
 									{index() > 0 ? <text fg={color.muted}> · </text> : null}
 									{withBars ? (
 										<>
-											<text fg={toneColor(tone)}>{barParts(seg.percent, FOOTER_BAR_WIDTH).filled}</text>
-											<text fg={color.muted}>{barParts(seg.percent, FOOTER_BAR_WIDTH).empty} </text>
+											<text fg={toneColor(tone)}>{parts.filled}</text>
+											<text fg={color.muted}>{parts.empty} </text>
 										</>
 									) : null}
 									<text fg={toneColor(tone)}>
@@ -211,7 +241,7 @@ export default Plugin.define({
 		/** One window as a coloured progress-bar row. */
 		function BarRow(props: { seg: UsageSegment }): JSX.Element {
 			const now = new Date();
-			const parts = barParts(props.seg.percent);
+			const parts = barParts(props.seg.percent, BAR_WIDTH);
 			const tone = segmentTone(props.seg.percent);
 			const percent = `${String(props.seg.percent).padStart(3)}%`;
 			return (
@@ -315,6 +345,7 @@ export default Plugin.define({
 					? "当前提供商未配置 API Key，或暂无对应的用量查询接口"
 					: "暂无数据：没有发现已配置 key 的提供商（/connect 连接后再试）";
 			const sessionCost = () => {
+				costTick(); // re-read after the open-time sync lands
 				if (!props.sessionID) return undefined;
 				const cost = context.data.session.cost(props.sessionID);
 				return Number.isFinite(cost) && cost > 0 ? `本会话成本 $${cost.toFixed(3)}` : undefined;
@@ -352,6 +383,14 @@ export default Plugin.define({
 
 		function openDetails(onlyName?: string, sessionID?: string): void {
 			if (disposed) return;
+			// Session cost is only accurate after the store synced; re-render
+			// once it lands so the line can appear.
+			if (sessionID) {
+				void context.data.session
+					.sync(sessionID)
+					.then(() => setCostTick((tick) => tick + 1))
+					.catch(() => {});
+			}
 			context.ui.dialog.set({ size: "large", centered: true });
 			context.ui.dialog.show(() => <Details onlyName={onlyName} sessionID={sessionID} />);
 		}
@@ -415,6 +454,12 @@ export default Plugin.define({
 
 		return () => {
 			disposed = true;
+			clearInterval(safetyPoll);
+			try {
+				context.renderer.off("resize", onResize);
+			} catch {
+				// Listener was never attached.
+			}
 			unsubscribe?.();
 			disposePrompt();
 			disposeHome();

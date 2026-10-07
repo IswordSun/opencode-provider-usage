@@ -1,6 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { EMPTY_SNAPSHOT } from "../src/types.ts";
-import { clampPercent, parseSnapshot } from "../src/validate.ts";
+import { clampPercent, isStale, parseSnapshot } from "../src/validate.ts";
+
+describe("isStale", () => {
+	const now = Date.parse("2030-01-01T12:00:00.000Z");
+	const iso = (offsetMs: number): string => new Date(now - offsetMs).toISOString();
+
+	test("fresh timestamps pass and old ones fail", () => {
+		expect(isStale(iso(60_000), 10 * 60_000, now)).toBe(false);
+		expect(isStale(iso(10 * 60_000), 10 * 60_000, now)).toBe(false); // boundary is inclusive
+		expect(isStale(iso(10 * 60_001), 10 * 60_000, now)).toBe(true);
+	});
+
+	test("missing or garbage timestamps count as stale", () => {
+		expect(isStale(undefined, 1_000, now)).toBe(true);
+		expect(isStale("not-a-date", 1_000, now)).toBe(true);
+	});
+});
 
 describe("clampPercent", () => {
 	test("rounds and clamps into 0-100", () => {

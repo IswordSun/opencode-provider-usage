@@ -142,3 +142,14 @@ export function parseSnapshot(input: unknown): Snapshot {
 	}
 	return { updatedAt: isoString(input.updatedAt) ?? EMPTY_SNAPSHOT.updatedAt, providers };
 }
+
+/**
+ * True when a cached result is too old to present as current. Missing or
+ * unparsable timestamps count as stale so a broken payload never lingers.
+ */
+export function isStale(iso: string | undefined, maxAgeMs: number, now: number = Date.now()): boolean {
+	if (!iso) return true;
+	const time = Date.parse(iso);
+	if (Number.isNaN(time)) return true;
+	return now - time > maxAgeMs;
+}

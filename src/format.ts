@@ -60,8 +60,23 @@ export function formatMoney(amount: string | number | undefined, currency: strin
 
 /** A 20-column usage bar, e.g. "████░░░░░░░░░░░░░░░░". */
 export function bar(percent: number, width = 20): string {
-	const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
-	return "█".repeat(filled) + "░".repeat(width - filled);
+	const parts = barParts(percent, width);
+	return parts.filled + parts.empty;
+}
+
+/**
+ * Splits a usage bar into coloured runs. Uses half-block cells so small
+ * percentages stay visible: 30% of 5 cells renders as "█▌░░░".
+ */
+export function barParts(percent: number, width = 20): { filled: string; empty: string } {
+	const clamped = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
+	const units = Math.max(0, Math.min(width * 2, Math.round((clamped / 100) * width * 2)));
+	const full = Math.floor(units / 2);
+	const half = units % 2;
+	return {
+		filled: "█".repeat(full) + (half ? "▌" : ""),
+		empty: "░".repeat(Math.max(0, width - full - half)),
+	};
 }
 
 export function stamp(date: Date): string {
