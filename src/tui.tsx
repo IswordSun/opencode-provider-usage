@@ -28,7 +28,10 @@ import { parseSnapshot } from "./validate.js";
 const INITIAL_LOAD_ATTEMPTS = 10;
 const REFRESH_TIMEOUT_MS = 15_000;
 const BAR_WIDTH = 20;
+const FOOTER_BAR_WIDTH = 5;
 const NAME_WIDTH = 12;
+/** Below this terminal width the footer drops its mini bars. */
+const NARROW_WIDTH = 100;
 
 const FAILURE_LABELS: Record<string, string> = {
 	no_key: "无key",
@@ -75,6 +78,15 @@ function failureLabel(state: ProviderFailure): string {
 function barParts(percent: number, width = BAR_WIDTH): { filled: string; empty: string } {
 	const cells = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
 	return { filled: "█".repeat(cells), empty: "░".repeat(width - cells) };
+}
+
+/** The window that binds hardest right now (highest percent). */
+function worstSegment(segments: readonly UsageSegment[]): UsageSegment | undefined {
+	let worst: UsageSegment | undefined;
+	for (const seg of segments) {
+		if (!worst || seg.percent > worst.percent) worst = seg;
+	}
+	return worst;
 }
 
 /** `→ 重置 21:40（剩 3h）`; caller prefixes the separator space. */
@@ -145,6 +157,12 @@ export default Plugin.define({
 
 		// --- footer ---------------------------------------------------------------
 
+		/** Terminal width when readable; narrow terminals drop the bars. */
+		const terminalWidth = (): number => {
+			const width = (context.renderer as { width?: unknown } | undefined)?.width;
+			return typeof width === "number" && width > 0 ? width : Number.POSITIVE_INFINITY;
+		};
+
 		function statusText(state: ProviderState): JSX.Element {
 			if (!state.ok) {
 				return <text fg={color.muted}>⚡ {failureLabel(state)}</text>;
@@ -154,21 +172,36 @@ export default Plugin.define({
 			}
 			const now = new Date();
 			const segments = state.data.segments;
+			const worst = worstSegment(segments);
+			const withBars = terminalWidth() >= NARROW_WIDTH;
 			return (
 				<box flexDirection="row" flexShrink={0}>
 					<text fg={toneColor(worstTone(segments))}>⚡ </text>
 					<For each={segments}>
-						{(seg, index) => (
-							<>
-								{index() > 0 ? <text fg={color.muted}> · </text> : null}
-								<text fg={toneColor(segmentTone(seg.percent))}>
-									{seg.label} {seg.percent}%
-								</text>
-								{seg.delta ? <text fg={color.muted}> {fmtDelta(seg.delta)}%</text> : null}
-								{seg.reset ? <text fg={color.muted}> →{formatReset(seg.reset, now)}</text> : null}
-							</>
-						)}
+						{(seg, index) => {
+							const tone = segmentTone(seg.percent);
+							return (
+								<>
+									{index() > 0 ? <text fg={color.muted}> · </text> : null}
+									{withBars ? (
+										<>
+											<text fg={toneColor(tone)}>{barParts(seg.percent, FOOTER_BAR_WIDTH).filled}</text>
+											<text fg={color.muted}>{barParts(seg.percent, FOOTER_BAR_WIDTH).empty} </text>
+										</>
+									) : null}
+									<text fg={toneColor(tone)}>
+										{seg.label} {seg.percent}%
+									</text>
+									{seg === worst && seg.delta ? (
+										<text fg={color.muted}> {fmtDelta(seg.delta)}%</text>
+									) : null}
+								</>
+							);
+						}}
 					</For>
+					{worst?.reset && worst.percent > 0 ? (
+						<text fg={color.muted}> →{formatReset(worst.reset, now)}</text>
+					) : null}
 				</box>
 			);
 		}
