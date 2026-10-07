@@ -42,13 +42,14 @@ Perplexity、Fireworks 等。OpenRouter 用普通 Key 查询会得到明确的"�
 
 opencode v2 的插件分两半，通过 RPC 通信：
 
-- `index.ts` → `src/index.ts`：**server 插件**。持有凭据与网络访问，刷新所有提供商，
-  通过 RPC `isword.provider-usage` 暴露快照；每 2 分钟轮询、会话空闲 / 每轮结束时刷新、429 指数退避。
+- `index.ts` → `src/index.ts`：**server 插件**。只负责 opencode 接线（凭据解析、发现、storage、RPC、定时器、日志）；
+  通过 RPC `isword.provider-usage` 暴露快照；每 2 分钟轮询、会话空闲 / 每轮结束时刷新。
 - `tui.tsx` → `src/tui.tsx`：**TUI 插件**。只读 RPC，把当前提供商的状态渲染到页脚状态行，
   点击或 `/quota` 打开明细对话框；`/quota all` 查看全部（每家一行，适配对话框高度）。
 - `src/providers.ts`：5 家提供商的官方接口实现（从 pi 移植）。
 - `src/backoff.ts`：429 指数退避（纯函数、可注入时钟）。
 - `src/samples.ts`：趋势样本存储（1 小时窗口、重置骤降清零、纯函数）。
+- `src/refresher.ts`：刷新状态机（状态、缓存 TTL、退避、趋势样本），时钟/抓取均可注入，全部单测覆盖。
 - `src/validate.ts`：快照防御性校验/清洗，坏数据降级为空快照而不是炸渲染。
 
 `index.ts` / `tui.tsx` 是 opencode 本地目录插件的约定入口（会自动监听文件变化）。
