@@ -11,7 +11,7 @@ import {
 	formatMoney,
 	formatReset,
 } from "./format.js";
-import type { UsageData, UsageSegment } from "./types.js";
+import type { Tone, UsageData, UsageSegment } from "./types.js";
 
 const OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
@@ -286,6 +286,31 @@ function zaiSite(context: ProviderContext): keyof typeof ZAI_QUOTA_URL {
 	return "cn";
 }
 
+/**
+ * Tries each `[url, tag]` site in order. A 401/403 means "this key belongs
+ * to the other site" for providers running CN + international platforms
+ * under one adapter, so the next site is attempted; other failures
+ * propagate. `tag` carries per-site metadata (e.g. currency).
+ */
+async function fetchSites<T, Tag>(
+	sites: ReadonlyArray<readonly [url: string, tag: Tag]>,
+	signal: AbortSignal,
+	request: (url: string, tag: Tag) => Promise<T>,
+): Promise<T> {
+	let lastError: unknown;
+	for (const [url, tag] of sites) {
+		try {
+			return await request(url, tag);
+		} catch (err) {
+			lastError = err;
+			const status = (err as { status?: number }).status;
+			if (status === 401 || status === 403) continue;
+			throw err;
+		}
+	}
+	throw lastError;
+}
+
 function zaiDef(): ProviderDef {
 	const ids = ["zai-coding-plan", "zai", "zhipuai-coding-plan", "zhipuai", "zhipuglm"];
 	return {
@@ -339,21 +364,286 @@ function zaiDef(): ProviderDef {
 			};
 
 			// A known provider id picks the site; otherwise try both (CN then intl).
-			const sites: Array<keyof typeof ZAI_QUOTA_URL> = context.providerID
-				? [zaiSite(context)]
-				: ["cn", "intl"];
-			let lastError: unknown;
-			for (const site of sites) {
-				try {
-					return await request(ZAI_QUOTA_URL[site]);
-				} catch (err) {
-					lastError = err;
-					const status = (err as { status?: number }).status;
-					if (status === 401 || status === 403) continue;
-					throw err;
-				}
+			const sites: ReadonlyArray<readonly [string, keyof typeof ZAI_QUOTA_URL]> = context.providerID
+				? [[ZAI_QUOTA_URL[zaiSite(context)], zaiSite(context)]]
+				: [
+						[ZAI_QUOTA_URL.cn, "cn"],
+						[ZAI_QUOTA_URL.intl, "intl"],
+					];
+			return fetchSites(sites, signal, (url) => request(url));
+		},
+	};
+}
+
+/** Shared low-balance colouring for prepaid accounts. */
+function balanceTone(amount: number): Tone {
+	return amount < 5 ? "error" : amount < 20 ? "warning" : "success";
+}
+
+/** Accepts numbers or numeric strings, as several APIs are inconsistent. */
+function num(value: unknown): number | undefined {
+	const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : undefined;
+	return n !== undefined && Number.isFinite(n) ? n : undefined;
+}
+
+// --- moonshot / kimi (pay-as-you-go balance) --------------------------------
+
+interface MoonshotBalancePayload {
+	code?: number;
+	status?: boolean;
+	data?: {
+		available_balance?: number | string;
+		voucher_balance?: number | string;
+		cash_balance?: number | string;
+	};
+}
+
+const MOONSHOT_BALANCE_URL = {
+	cn: "https://api.moonshot.cn/v1/users/me/balance", // CNY
+	intl: "https://api.moonshot.ai/v1/users/me/balance", // USD
+} as const;
+
+function moonshotDef(): ProviderDef {
+	return {
+		name: "moonshot",
+		title: "Kimi / Moonshot 余额",
+		ids: ["moonshotai", "moonshotai-cn", "moonshot"],
+		envKeys: ["MOONSHOT_API_KEY"],
+		authIDs: ["moonshotai", "moonshotai-cn", "moonshot"],
+		hosts: ["api.moonshot.cn", "api.moonshot.ai"],
+		async fetch(key, signal, context) {
+			const request = async (url: string, currency: string): Promise<UsageData | undefined> => {
+				const res = await fetch(url, {
+					headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+					signal,
+				});
+				if (!res.ok) throw new HttpError(res.status);
+				const payload = await getJson<MoonshotBalancePayload>(res);
+				if (payload.code !== undefined && payload.code !== 0) throw new HttpError(401);
+				const available = num(payload.data?.available_balance);
+				if (available === undefined) return undefined;
+				const voucher = num(payload.data?.voucher_balance);
+				const cash = num(payload.data?.cash_balance);
+				return {
+					kind: "balance",
+					title: "Kimi / Moonshot 余额",
+					text: `💰 ${formatMoney(available, currency)}`,
+					tone: balanceTone(available),
+					detailLines: [
+						`• 可用余额: ${formatMoney(available, currency)}（现金 ${formatMoney(cash, currency)} / 赠送 ${formatMoney(voucher, currency)}）`,
+					],
+				};
+			};
+
+			const intl = context.providerID === "moonshotai" || hostOf(context.baseUrl) === "api.moonshot.ai";
+			const sites: ReadonlyArray<readonly [string, string]> = intl
+				? [[MOONSHOT_BALANCE_URL.intl, "USD"]]
+				: [
+						[MOONSHOT_BALANCE_URL.cn, "CNY"],
+						[MOONSHOT_BALANCE_URL.intl, "USD"],
+					];
+			return fetchSites(sites, signal, (url, currency) => request(url, currency));
+		},
+	};
+}
+
+// --- siliconflow (pay-as-you-go balance) ------------------------------------
+
+interface SiliconflowInfoPayload {
+	code?: number;
+	status?: boolean;
+	message?: string;
+	data?: {
+		balance?: string | number;
+		chargeBalance?: string | number;
+		totalBalance?: string | number;
+		status?: string;
+	};
+}
+
+const SILICONFLOW_INFO_URL = {
+	cn: "https://api.siliconflow.cn/v1/user/info", // CNY
+	intl: "https://api.siliconflow.com/v1/user/info", // USD
+} as const;
+
+function siliconflowDef(): ProviderDef {
+	return {
+		name: "siliconflow",
+		title: "SiliconFlow 余额",
+		ids: ["siliconflow", "siliconflow-cn"],
+		envKeys: ["SILICONFLOW_API_KEY", "SILICONFLOW_CN_API_KEY"],
+		authIDs: ["siliconflow", "siliconflow-cn"],
+		hosts: ["api.siliconflow.cn", "api.siliconflow.com"],
+		async fetch(key, signal, context) {
+			const request = async (url: string, currency: string): Promise<UsageData | undefined> => {
+				const res = await fetch(url, {
+					headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+					signal,
+				});
+				if (!res.ok) throw new HttpError(res.status);
+				const payload = await getJson<SiliconflowInfoPayload>(res);
+				if (payload.status === false) throw new HttpError(401);
+				const balance = num(payload.data?.balance);
+				if (balance === undefined) return undefined;
+				const charge = num(payload.data?.chargeBalance);
+				const total = num(payload.data?.totalBalance);
+				const status = payload.data?.status ? `（账户 ${payload.data.status}）` : "";
+				return {
+					kind: "balance",
+					title: "SiliconFlow 余额",
+					text: `💰 ${formatMoney(balance, currency)}`,
+					tone: balanceTone(balance),
+					detailLines: [
+						`• 可用余额: ${formatMoney(balance, currency)}（充值 ${formatMoney(charge, currency)} / 累计 ${formatMoney(total, currency)}）${status}`,
+					],
+				};
+			};
+
+			const cn = context.providerID === "siliconflow-cn" || hostOf(context.baseUrl) === "api.siliconflow.cn";
+			const sites: ReadonlyArray<readonly [string, string]> = cn
+				? [[SILICONFLOW_INFO_URL.cn, "CNY"]]
+				: [
+						[SILICONFLOW_INFO_URL.intl, "USD"],
+						[SILICONFLOW_INFO_URL.cn, "CNY"],
+					];
+			return fetchSites(sites, signal, (url, currency) => request(url, currency));
+		},
+	};
+}
+
+// --- openrouter (prepaid credits) -------------------------------------------
+
+interface OpenrouterCreditsPayload {
+	data?: { total_credits?: number; total_usage?: number };
+}
+
+const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
+
+function openrouterDef(): ProviderDef {
+	return {
+		name: "openrouter",
+		title: "OpenRouter 额度",
+		ids: ["openrouter"],
+		envKeys: ["OPENROUTER_API_KEY"],
+		authIDs: ["openrouter"],
+		hosts: ["openrouter.ai"],
+		async fetch(key, signal) {
+			const res = await fetch(OPENROUTER_CREDITS_URL, {
+				headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+				signal,
+			});
+			if (res.status === 403) {
+				// The credits endpoint only accepts management keys.
+				throw new Error("该 Key 无权限：OpenRouter 额度查询需要 Management Key");
 			}
-			throw lastError;
+			if (!res.ok) throw new HttpError(res.status);
+			const payload = await getJson<OpenrouterCreditsPayload>(res);
+			const total = num(payload.data?.total_credits);
+			const used = num(payload.data?.total_usage);
+			if (total === undefined || used === undefined) return undefined;
+			const remaining = total - used;
+			return {
+				kind: "balance",
+				title: "OpenRouter 额度",
+				text: `💰 ${formatMoney(remaining, "USD")}`,
+				tone: balanceTone(remaining),
+				detailLines: [
+					`• 剩余额度: ${formatMoney(remaining, "USD")}（已用 ${formatMoney(used, "USD")} / 总充值 ${formatMoney(total, "USD")}）`,
+				],
+			};
+		},
+	};
+}
+
+// --- skywork (pay-as-you-go balance) ----------------------------------------
+
+interface SkyworkBalancePayload {
+	code?: number;
+	resp_data?: {
+		available_amount?: number;
+		total_amount?: number;
+		consumed_amount?: number;
+		currency?: string;
+	};
+}
+
+const SKYWORK_BALANCE_URL = "https://api.skyworkmodel.ai/api/v1/balance";
+
+function skyworkDef(): ProviderDef {
+	return {
+		name: "skywork",
+		title: "Skywork 余额",
+		ids: ["skywork", "skyworkmodel"],
+		envKeys: ["SKYWORK_API_KEY"],
+		authIDs: ["skywork"],
+		hosts: ["api.skyworkmodel.ai"],
+		async fetch(key, signal) {
+			const res = await fetch(SKYWORK_BALANCE_URL, {
+				headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+				signal,
+			});
+			if (!res.ok) throw new HttpError(res.status);
+			const payload = await getJson<SkyworkBalancePayload>(res);
+			const available = num(payload.resp_data?.available_amount);
+			if (available === undefined) return undefined;
+			const currency = payload.resp_data?.currency ?? "USD";
+			const total = num(payload.resp_data?.total_amount);
+			const consumed = num(payload.resp_data?.consumed_amount);
+			return {
+				kind: "balance",
+				title: "Skywork 余额",
+				text: `💰 ${formatMoney(available, currency)}`,
+				tone: balanceTone(available),
+				detailLines: [
+					`• 可用余额: ${formatMoney(available, currency)}（已用 ${formatMoney(consumed, currency)} / 累计 ${formatMoney(total, currency)}）`,
+				],
+			};
+		},
+	};
+}
+
+// --- novita (pay-as-you-go balance) -----------------------------------------
+
+interface NovitaBalancePayload {
+	availableBalance?: string;
+	cashBalance?: string;
+	creditLimit?: string;
+	pendingCharges?: string;
+}
+
+const NOVITA_BALANCE_URL = "https://api.novita.ai/openapi/v1/billing/balance/detail";
+/** Novita reports money in 1/10000 USD. */
+const NOVITA_UNIT = 10_000;
+
+function novitaDef(): ProviderDef {
+	return {
+		name: "novita",
+		title: "Novita 余额",
+		ids: ["novita", "novita-ai"],
+		envKeys: ["NOVITA_API_KEY"],
+		authIDs: ["novita"],
+		hosts: ["api.novita.ai"],
+		async fetch(key, signal) {
+			const res = await fetch(NOVITA_BALANCE_URL, {
+				headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+				signal,
+			});
+			if (!res.ok) throw new HttpError(res.status);
+			const payload = await getJson<NovitaBalancePayload>(res);
+			const availableUnits = num(payload.availableBalance);
+			if (availableUnits === undefined) return undefined;
+			const usd = (units: number | undefined): string =>
+				units === undefined ? "?" : (units / NOVITA_UNIT).toFixed(2);
+			const available = availableUnits / NOVITA_UNIT;
+			return {
+				kind: "balance",
+				title: "Novita 余额",
+				text: `💰 $${usd(availableUnits)}`,
+				tone: balanceTone(available),
+				detailLines: [
+					`• 可用余额: $${usd(availableUnits)}（现金 $${usd(num(payload.cashBalance))} / 信用额度 $${usd(num(payload.creditLimit))}）`,
+				],
+			};
 		},
 	};
 }
@@ -489,7 +779,18 @@ function openaiCodexDef(): ProviderDef {
 }
 
 export function providerDefs(): ProviderDef[] {
-	return [opencodeDef(), deepseekDef(), stepfunDef(), openaiCodexDef(), zaiDef()];
+	return [
+		opencodeDef(),
+		deepseekDef(),
+		stepfunDef(),
+		openaiCodexDef(),
+		zaiDef(),
+		moonshotDef(),
+		siliconflowDef(),
+		openrouterDef(),
+		skyworkDef(),
+		novitaDef(),
+	];
 }
 
 /** The provider serving the given model, if any. */

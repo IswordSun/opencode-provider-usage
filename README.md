@@ -17,6 +17,15 @@ V1 双文件方案（`plugins.v1.bak/quota-display.js` + `quota-statusbar.tsx`�
 | stepfun | 账户余额（CNY） | `api.stepfun.com/v1/accounts` |
 | zai / zhipuai | GLM Coding Plan 积分（5h / 周 / 月） | `open.bigmodel.cn` / `api.z.ai` |
 | openai-codex | ChatGPT 订阅额度（主 / 次窗口） | `chatgpt.com/backend-api/wham/usage` |
+| moonshot / kimi | 账户余额（.cn 为 CNY，.ai 为 USD） | `api.moonshot.cn` / `api.moonshot.ai` `/v1/users/me/balance` |
+| siliconflow | 账户余额（.cn 为 CNY，.com 为 USD） | `api.siliconflow.cn` / `.com` `/v1/user/info` |
+| openrouter | 预付费 Credits 剩余（需 Management Key） | `openrouter.ai/api/v1/credits` |
+| skywork | 账户余额（自带币种字段） | `api.skyworkmodel.ai/api/v1/balance` |
+| novita | 账户余额（接口单位为 1/10000 USD，已换算） | `api.novita.ai/openapi/v1/billing/balance/detail` |
+
+没有公开余额/额度接口、只能去控制台看的常见服务商（连了 key 也不会显示）：MiniMax、
+Kimi For Coding（kimi.com 订阅）、Qwen/百炼、火山方舟、Groq、Together、Mistral、xAI、
+Perplexity、Fireworks 等。OpenRouter 用普通 Key 查询会得到明确的"需要 Management Key"提示。
 
 ### 发现规则
 
@@ -27,7 +36,7 @@ V1 双文件方案（`plugins.v1.bak/quota-display.js` + `quota-statusbar.tsx`�
 3. 解析不出 key 的适配器**不进快照**（页脚、`/quota`、`/quota all` 一律不出现，不会有 `无key` 噪音）；
 4. key 被移除后，该提供商会在下一轮刷新中自动从快照里消失。
 
-新增一家没有适配器的服务商时，只需在 `src/providers.ts` 里加一个 `ids`/`hosts`/`fetch` 定义即可，其余逻辑不用动。
+新增一家没有适配器的服务商时，只需在 `src/providers.ts` 里加一个 `ids`/`hosts`/`fetch` 定义即可，其余逻辑不用动。CN/国际双站点的服务商（moonshot、siliconflow、zai）共用 `fetchSites` 助手：一个站点返回 401/403 时自动换另一个站点试，避免"国内 key 打国际站"的误报。
 
 ## 结构
 
