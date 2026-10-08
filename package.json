@@ -42,10 +42,10 @@
 		}
 	},
 	"license": "MIT",
-	"author": "isword",
+	"author": "IswordSun",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/isword/opencode-provider-usage.git"
+		"url": "git+https://github.com/IswordSun/opencode-provider-usage.git"
 	},
 	"keywords": [
 		"opencode",
