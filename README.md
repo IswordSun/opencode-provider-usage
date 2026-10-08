@@ -108,6 +108,18 @@ opencode plugin list        # 应出现 opencode-provider-usage
 - 部分网络环境访问 registry.npmjs.org 不通会导致拉包失败，多次
   `opencode service restart` 重试，或先在能访问的机器 `npm pack` 后改用本地路径安装。
 
+### 更新
+
+```bash
+opencode plugin check                            # 检查可更新项
+opencode plugin update opencode-provider-usage   # 更新本插件（省略参数 = 更新全部）
+opencode service restart                         # 重载生效，或直接重启 TUI
+```
+
+`plugins` 里写不带版本号的包名时，opencode 每次服务启动会自动检查新版（仅提示，
+不自动安装）；想锁定版本可写 `opencode-provider-usage@0.1.1`，精确版本不会被
+`plugin update` 触碰。
+
 ### 本地开发
 
 ```bash
