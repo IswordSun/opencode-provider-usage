@@ -1,6 +1,6 @@
 {
 	"name": "opencode-provider-usage",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"type": "module",
 	"description": "OpenCode v2 plugin: live provider quota/balance/credits in the TUI sidebar, with gradient bars, trend ETA and a /quota detail dialog.",
 	"exports": {

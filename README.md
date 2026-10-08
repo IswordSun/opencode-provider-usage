@@ -57,22 +57,68 @@ opencode v2 的插件分两半，通过 RPC 通信：
 
 ## 安装
 
-**npm 包（推荐）** — 在 `~/.config/opencode/opencode.json` 加入：
+要求 **OpenCode v2**（≥ 2.0.3，在 2.0.24 上开发测试）。
+
+### 1. 加入全局配置
+
+编辑 `~/.config/opencode/opencode.json`（没有就新建一个）：
 
 ```jsonc
 {
+  "$schema": "https://opencode.ai/config.json",
   "plugins": ["opencode-provider-usage"]
 }
 ```
 
-重启 TUI（或 `opencode service restart`）。opencode 会在后台自动从 registry 拉取并加载，
-TUI 部分通过 `./tui` 导出自动挂载，无需改 `cli.json`。
+已有 `plugins` 数组的话追加一项即可。**`cli.json` 不用改**——TUI 部分通过包的
+`./tui` 导出自动挂载，无需重复配置。
 
-**本地开发** — 直接指向仓库目录，文件改动自动重载：
+### 2. 重载
+
+```bash
+opencode service restart    # 或者直接重启 TUI
+```
+
+首次加载时 opencode 会自动从 npm registry 拉取包（视网络可能要几十秒）。
+
+### 3. 给至少一家提供商配置凭据
+
+插件只显示**解析得出 key** 的提供商。三种方式任选：
+
+- TUI 里执行 `/connect`，按引导连接；
+- 终端执行 `opencode auth login`；
+- 或设置适配器声明的环境变量：`OPENCODE_API_KEY`（opencode/go）、
+  `DEEPSEEK_API_KEY`、`ZHIPU_API_KEY` / `ZAI_API_KEY`（GLM）、`MOONSHOT_API_KEY`、
+  `SILICONFLOW_API_KEY`、`OPENROUTER_API_KEY`（需 Management Key）、
+  `SKYWORK_API_KEY`、`NOVITA_API_KEY`、`STEPFUN_API_KEY`。
+
+### 4. 验证
+
+```bash
+opencode plugin list        # 应出现 opencode-provider-usage
+```
+
+进入会话后侧栏出现额度块即安装成功（首轮刷新最多等 2 分钟）；点击侧栏块
+或执行 `/quota` 查看明细，`/quota all` 查看全部提供商。
+
+### 排障
+
+- 加载失败或侧栏无显示时看日志：
+  `grep -i provider-usage ~/.local/share/opencode/log/opencode.log | tail`
+- 部分网络环境访问 registry.npmjs.org 不通会导致拉包失败，多次
+  `opencode service restart` 重试，或先在能访问的机器 `npm pack` 后改用本地路径安装。
+
+### 本地开发
+
+```bash
+git clone https://github.com/IswordSun/opencode-provider-usage
+```
+
+把 `plugins` 指向仓库目录（改动自动重载）：
 
 ```jsonc
 {
-  "plugins": ["/path/to/opencode-provider-usage"]
+  "plugins": ["/absolute/path/to/opencode-provider-usage"]
 }
 ```
 
