@@ -25,7 +25,7 @@ test("moonshot parses the balance and colors low balances", async () => {
 	if (data?.kind !== "balance") return;
 	expect(data.text).toBe("💰 ¥3.50");
 	expect(data.tone).toBe("error");
-	expect(data.detailLines[0]).toContain("现金 ¥3.00");
+	expect(data.detailLines[0]).toContain("cash ¥3.00");
 });
 
 test("moonshot treats a non-zero code as an auth failure", async () => {
@@ -47,8 +47,8 @@ test("siliconflow parses balance/charge/total", async () => {
 	if (data?.kind !== "balance") return;
 	expect(data.text).toBe("💰 ¥0.88");
 	expect(data.tone).toBe("error");
-	expect(data.detailLines[0]).toContain("充值 ¥88.00");
-	expect(data.detailLines[0]).toContain("账户 normal");
+	expect(data.detailLines[0]).toContain("topped up ¥88.00");
+	expect(data.detailLines[0]).toContain("account normal");
 });
 
 test("openrouter computes remaining credits", async () => {
@@ -58,7 +58,7 @@ test("openrouter computes remaining credits", async () => {
 	if (data?.kind !== "balance") return;
 	expect(data.text).toBe("💰 $75.25");
 	expect(data.tone).toBe("success");
-	expect(data.detailLines[0]).toContain("总充值 $100.50");
+	expect(data.detailLines[0]).toContain("topped up $100.50");
 });
 
 test("openrouter explains that management keys are required on 403", async () => {
@@ -77,7 +77,7 @@ test("skywork parses resp_data with its own currency", async () => {
 	expect(data?.kind).toBe("balance");
 	if (data?.kind !== "balance") return;
 	expect(data.text).toBe("💰 $158.82");
-	expect(data.detailLines[0]).toContain("已用 $44.67");
+	expect(data.detailLines[0]).toContain("used $44.67");
 });
 
 test("novita converts its 1/10000 USD units", async () => {
@@ -86,7 +86,7 @@ test("novita converts its 1/10000 USD units", async () => {
 	expect(data?.kind).toBe("balance");
 	if (data?.kind !== "balance") return;
 	expect(data.text).toBe("💰 $100.00");
-	expect(data.detailLines[0]).toContain("现金 $80.00");
+	expect(data.detailLines[0]).toContain("cash $80.00");
 });
 
 test("new providers match by integration id and host", () => {

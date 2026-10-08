@@ -137,7 +137,7 @@ const refresher = new UsageRefresher({
 async function fetchUsage(def: ProviderDef, key: string): Promise<UsageData | undefined> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt < 2; attempt++) {
-		if (abort?.signal.aborted) throw lastError ?? new Error("已停止");
+		if (abort?.signal.aborted) throw lastError ?? new Error("aborted");
 		const controller = new AbortController();
 		const onParentAbort = () => controller.abort();
 		abort?.signal.addEventListener("abort", onParentAbort, { once: true });
@@ -239,11 +239,11 @@ async function doRefresh(): Promise<Snapshot> {
 			.join(",");
 		if (signature !== lastDiscoverySignature) {
 			lastDiscoverySignature = signature;
-			log(`发现已配置 key 的提供商: ${signature || "（无）"}`);
+			log(`providers with keys: ${signature || "(none)"}`);
 		}
 		snapshot = await refresher.refresh(keyed);
 	} catch (err) {
-		log("刷新循环异常", err instanceof Error ? err.message : err);
+		log("refresh loop error", err instanceof Error ? err.message : err);
 	}
 	publishSnapshot(snapshot);
 	lastRefreshAt = Date.now();

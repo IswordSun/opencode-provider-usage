@@ -18,7 +18,7 @@ export interface UsageSegment {
 	etaMs?: number;
 	/** Provider-reported window status when not "ok" (e.g. "limited"). */
 	status?: string;
-	/** Short supplementary text for this window (e.g. "已用 12/240 积分"). */
+	/** Short supplementary text for this window (e.g. "12/240 pts used"). */
 	note?: string;
 }
 

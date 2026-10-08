@@ -84,7 +84,7 @@ function parseSegments(value: unknown): UsageSegment[] {
 
 function parseUsage(value: unknown): PercentUsage | BalanceUsage | undefined {
 	if (!isRecord(value)) return undefined;
-	const title = string(value.title) ?? "额度";
+	const title = string(value.title) ?? "Usage";
 	if (value.kind === "balance") {
 		const text = string(value.text);
 		if (text === undefined) return undefined;
@@ -118,7 +118,7 @@ function parseProviderState(value: unknown): ProviderState | undefined {
 		const failure: ProviderState = {
 			ok: false,
 			code: code !== undefined && FAILURE_CODES.has(code) ? (code as FailureCode) : "network",
-			error: string(value.error) ?? "查询失败",
+			error: string(value.error) ?? "fetch failed",
 			fetchedAt,
 		};
 		const retryAt = isoString(value.retryAt);

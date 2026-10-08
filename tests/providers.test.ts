@@ -99,7 +99,7 @@ test("oversized response bodies are refused before parsing", async () => {
 			headers: { "content-type": "application/json", "content-length": String(50_000_000) },
 		})) as unknown as typeof fetch;
 	await expect(defByName("opencode").fetch("key", new AbortController().signal, {})).rejects.toThrow(
-		/过大/,
+		/too large/,
 	);
 });
 

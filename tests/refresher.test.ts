@@ -171,7 +171,7 @@ describe("UsageRefresher", () => {
 		fail = true;
 		await refresher.refresh([{ def, key: "k" }]);
 		await refresher.refresh([{ def, key: "k" }]); // cached, still failure state logged once
-		expect(logs.filter((l) => l.includes("恢复正常"))).toHaveLength(1);
+		expect(logs.filter((l) => l.includes("recovered"))).toHaveLength(1);
 	});
 
 	test("trend deltas accumulate across rounds", async () => {

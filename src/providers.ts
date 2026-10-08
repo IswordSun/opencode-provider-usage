@@ -79,19 +79,19 @@ const MAX_BODY_BYTES = 2_000_000;
 async function getJson<T>(res: Response): Promise<T> {
 	const declared = Number(res.headers.get("content-length") ?? "");
 	if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-		throw new Error(`响应体过大（${(declared / 1_000_000).toFixed(1)}MB）`);
+		throw new Error(`response body too large (${(declared / 1_000_000).toFixed(1)}MB)`);
 	}
 	let text: string;
 	try {
 		text = await res.text();
 	} catch {
-		throw new Error("读取响应体失败");
+		throw new Error("failed to read response body");
 	}
-	if (text.length > MAX_BODY_BYTES) throw new Error("响应体过大");
+	if (text.length > MAX_BODY_BYTES) throw new Error("response body too large");
 	try {
 		return JSON.parse(text) as T;
 	} catch {
-		throw new Error(`响应不是有效 JSON（${text.slice(0, 80)}）`);
+		throw new Error(`response is not valid JSON (${text.slice(0, 80)})`);
 	}
 }
 
@@ -119,7 +119,7 @@ interface OpencodeUsagePayload {
 function opencodeDef(): ProviderDef {
 	return {
 		name: "opencode",
-		title: "OpenCode 额度",
+		title: "OpenCode Usage",
 		ids: ["opencode-go", "opencode"],
 		envKeys: ["OPENCODE_API_KEY"],
 		authIDs: ["opencode-go", "opencode"],
@@ -149,7 +149,7 @@ function opencodeDef(): ProviderDef {
 			if (!segments.length) return undefined;
 			// Windows are rendered as progress bars by the TUI; detailLines
 			// carries only supplementary text.
-			return { kind: "percent", title: "OpenCode 额度", segments, detailLines: [] };
+			return { kind: "percent", title: "OpenCode Usage", segments, detailLines: [] };
 		},
 	};
 }
@@ -169,7 +169,7 @@ interface DeepseekBalancePayload {
 function deepseekDef(): ProviderDef {
 	return {
 		name: "deepseek",
-		title: "DeepSeek 余额",
+		title: "DeepSeek Balance",
 		ids: ["deepseek"],
 		envKeys: ["DEEPSEEK_API_KEY"],
 		authIDs: ["deepseek"],
@@ -185,10 +185,10 @@ function deepseekDef(): ProviderDef {
 			if (!payload.is_available) {
 				return {
 					kind: "balance",
-					title: "DeepSeek 余额",
-					text: "💰 余额不可用",
+					title: "DeepSeek Balance",
+					text: "💰 unavailable",
 					tone: "error",
-					detailLines: ["• 账户当前不可用（is_available=false）"],
+					detailLines: ["• account unavailable (is_available=false)"],
 				};
 			}
 			if (!payload.balance_infos?.length) return undefined;
@@ -196,9 +196,9 @@ function deepseekDef(): ProviderDef {
 			const detailLines = payload.balance_infos.map((info) => {
 				const currency = info.currency || "CNY";
 				return (
-					`${currency}: 总额 ${formatMoney(info.total_balance, currency)}` +
-					`（充值 ${formatMoney(info.topped_up_balance, currency)}` +
-					` / 赠送 ${formatMoney(info.granted_balance, currency)}）`
+					`${currency}: total ${formatMoney(info.total_balance, currency)}` +
+					` (topped up ${formatMoney(info.topped_up_balance, currency)}` +
+					` / granted ${formatMoney(info.granted_balance, currency)})`
 				);
 			});
 
@@ -208,7 +208,7 @@ function deepseekDef(): ProviderDef {
 			const minTotal = totals.length ? Math.min(...totals) : -1;
 			return {
 				kind: "balance",
-				title: "DeepSeek 余额",
+				title: "DeepSeek Balance",
 				text: `💰 ${payload.balance_infos
 					.map((info) => formatMoney(info.total_balance, info.currency || "CNY"))
 					.join(" ")}`,
@@ -230,14 +230,14 @@ interface StepfunAccountPayload {
 }
 
 const STEPFUN_ACCOUNT_TYPE_LABELS: Record<string, string> = {
-	prepaid: "预付费",
-	postpaid: "后付费",
+	prepaid: "prepaid",
+	postpaid: "postpaid",
 };
 
 function stepfunDef(): ProviderDef {
 	return {
 		name: "stepfun",
-		title: "StepFun 余额",
+		title: "StepFun Balance",
 		ids: ["stepfun", "stepfun-ai"],
 		envKeys: ["STEPFUN_API_KEY"],
 		authIDs: ["stepfun"],
@@ -256,14 +256,14 @@ function stepfunDef(): ProviderDef {
 			const typeLabel = STEPFUN_ACCOUNT_TYPE_LABELS[payload.type ?? ""] ?? payload.type ?? "?";
 			return {
 				kind: "balance",
-				title: "StepFun 余额",
+				title: "StepFun Balance",
 				text: `💰 ¥${fmt(balance)}`,
 				tone: balance < 5 ? "error" : balance < 20 ? "warning" : "success",
 				detailLines: [
-					`可用余额: ¥${fmt(balance)}`,
-					`充值总额: ¥${fmt(payload.total_cash_balance)}`,
-					`赠送总额: ¥${fmt(payload.total_voucher_balance)}`,
-					`账户类型: ${typeLabel}`,
+					`available: ¥${fmt(balance)}`,
+					`topped up: ¥${fmt(payload.total_cash_balance)}`,
+					`granted: ¥${fmt(payload.total_voucher_balance)}`,
+					`account type: ${typeLabel}`,
 				],
 			};
 		},
@@ -322,7 +322,7 @@ function zaiDef(): ProviderDef {
 	const ids = ["zai-coding-plan", "zai", "zhipuai-coding-plan", "zhipuai", "zhipuglm"];
 	return {
 		name: "zai",
-		title: "GLM Coding Plan 额度",
+		title: "GLM Coding Plan",
 		ids: [...ids],
 		envKeys: ["ZHIPU_API_KEY", "ZAI_API_KEY"],
 		authIDs: ids,
@@ -349,7 +349,7 @@ function zaiDef(): ProviderDef {
 
 				const segments: UsageSegment[] = [];
 				const detailLines: string[] = [];
-				if (levelLabel) detailLines.push(`套餐 ${levelLabel}`);
+				if (levelLabel) detailLines.push(`plan ${levelLabel}`);
 				for (const [index, win] of windows.entries()) {
 					const label = labels[index] ?? `W${index + 1}`;
 					const segment: UsageSegment = {
@@ -360,12 +360,12 @@ function zaiDef(): ProviderDef {
 						segment.reset = new Date(win.nextResetTime).toISOString();
 					}
 					if (typeof win.currentValue === "number" && typeof win.usage === "number") {
-						segment.note = `已用 ${win.currentValue}/${win.usage} 积分`;
+						segment.note = `${win.currentValue}/${win.usage} pts used`;
 					}
 					segments.push(segment);
 				}
 				if (!segments.length) return undefined;
-				return { kind: "percent", title: "GLM Coding Plan 额度", segments, detailLines };
+				return { kind: "percent", title: "GLM Coding Plan", segments, detailLines };
 			};
 
 			// A known provider id picks the site; otherwise try both (CN then intl).
@@ -411,7 +411,7 @@ const MOONSHOT_BALANCE_URL = {
 function moonshotDef(): ProviderDef {
 	return {
 		name: "moonshot",
-		title: "Kimi / Moonshot 余额",
+		title: "Kimi / Moonshot Balance",
 		ids: ["moonshotai", "moonshotai-cn", "moonshot"],
 		envKeys: ["MOONSHOT_API_KEY"],
 		authIDs: ["moonshotai", "moonshotai-cn", "moonshot"],
@@ -431,11 +431,11 @@ function moonshotDef(): ProviderDef {
 				const cash = num(payload.data?.cash_balance);
 				return {
 					kind: "balance",
-					title: "Kimi / Moonshot 余额",
+					title: "Kimi / Moonshot Balance",
 					text: `💰 ${formatMoney(available, currency)}`,
 					tone: balanceTone(available),
 					detailLines: [
-						`可用余额: ${formatMoney(available, currency)}（现金 ${formatMoney(cash, currency)} / 赠送 ${formatMoney(voucher, currency)}）`,
+						`available: ${formatMoney(available, currency)} (cash ${formatMoney(cash, currency)} / voucher ${formatMoney(voucher, currency)})`,
 					],
 				};
 			};
@@ -474,7 +474,7 @@ const SILICONFLOW_INFO_URL = {
 function siliconflowDef(): ProviderDef {
 	return {
 		name: "siliconflow",
-		title: "SiliconFlow 余额",
+		title: "SiliconFlow Balance",
 		ids: ["siliconflow", "siliconflow-cn"],
 		envKeys: ["SILICONFLOW_API_KEY", "SILICONFLOW_CN_API_KEY"],
 		authIDs: ["siliconflow", "siliconflow-cn"],
@@ -492,14 +492,14 @@ function siliconflowDef(): ProviderDef {
 				if (balance === undefined) return undefined;
 				const charge = num(payload.data?.chargeBalance);
 				const total = num(payload.data?.totalBalance);
-				const status = payload.data?.status ? `（账户 ${payload.data.status}）` : "";
+				const status = payload.data?.status ? ` (account ${payload.data.status})` : "";
 				return {
 					kind: "balance",
-					title: "SiliconFlow 余额",
+					title: "SiliconFlow Balance",
 					text: `💰 ${formatMoney(balance, currency)}`,
 					tone: balanceTone(balance),
 					detailLines: [
-						`可用余额: ${formatMoney(balance, currency)}（充值 ${formatMoney(charge, currency)} / 累计 ${formatMoney(total, currency)}）${status}`,
+						`available: ${formatMoney(balance, currency)} (topped up ${formatMoney(charge, currency)} / total ${formatMoney(total, currency)})${status}`,
 					],
 				};
 			};
@@ -527,7 +527,7 @@ const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
 function openrouterDef(): ProviderDef {
 	return {
 		name: "openrouter",
-		title: "OpenRouter 额度",
+		title: "OpenRouter Credits",
 		ids: ["openrouter"],
 		envKeys: ["OPENROUTER_API_KEY"],
 		authIDs: ["openrouter"],
@@ -539,7 +539,7 @@ function openrouterDef(): ProviderDef {
 			});
 			if (res.status === 403) {
 				// The credits endpoint only accepts management keys.
-				throw new Error("该 Key 无权限：OpenRouter 额度查询需要 Management Key");
+				throw new Error("key not permitted: OpenRouter credits query requires a Management Key");
 			}
 			if (!res.ok) throw new HttpError(res.status);
 			const payload = await getJson<OpenrouterCreditsPayload>(res);
@@ -549,11 +549,11 @@ function openrouterDef(): ProviderDef {
 			const remaining = total - used;
 			return {
 				kind: "balance",
-				title: "OpenRouter 额度",
+				title: "OpenRouter Credits",
 				text: `💰 ${formatMoney(remaining, "USD")}`,
 				tone: balanceTone(remaining),
 				detailLines: [
-					`剩余额度: ${formatMoney(remaining, "USD")}（已用 ${formatMoney(used, "USD")} / 总充值 ${formatMoney(total, "USD")}）`,
+					`remaining: ${formatMoney(remaining, "USD")} (used ${formatMoney(used, "USD")} / topped up ${formatMoney(total, "USD")})`,
 				],
 			};
 		},
@@ -577,7 +577,7 @@ const SKYWORK_BALANCE_URL = "https://api.skyworkmodel.ai/api/v1/balance";
 function skyworkDef(): ProviderDef {
 	return {
 		name: "skywork",
-		title: "Skywork 余额",
+		title: "Skywork Balance",
 		ids: ["skywork", "skyworkmodel"],
 		envKeys: ["SKYWORK_API_KEY"],
 		authIDs: ["skywork"],
@@ -596,11 +596,11 @@ function skyworkDef(): ProviderDef {
 			const consumed = num(payload.resp_data?.consumed_amount);
 			return {
 				kind: "balance",
-				title: "Skywork 余额",
+				title: "Skywork Balance",
 				text: `💰 ${formatMoney(available, currency)}`,
 				tone: balanceTone(available),
 				detailLines: [
-					`可用余额: ${formatMoney(available, currency)}（已用 ${formatMoney(consumed, currency)} / 累计 ${formatMoney(total, currency)}）`,
+					`available: ${formatMoney(available, currency)} (used ${formatMoney(consumed, currency)} / total ${formatMoney(total, currency)})`,
 				],
 			};
 		},
@@ -623,7 +623,7 @@ const NOVITA_UNIT = 10_000;
 function novitaDef(): ProviderDef {
 	return {
 		name: "novita",
-		title: "Novita 余额",
+		title: "Novita Balance",
 		ids: ["novita", "novita-ai"],
 		envKeys: ["NOVITA_API_KEY"],
 		authIDs: ["novita"],
@@ -642,11 +642,11 @@ function novitaDef(): ProviderDef {
 			const available = availableUnits / NOVITA_UNIT;
 			return {
 				kind: "balance",
-				title: "Novita 余额",
+				title: "Novita Balance",
 				text: `💰 $${usd(availableUnits)}`,
 				tone: balanceTone(available),
 				detailLines: [
-					`可用余额: $${usd(availableUnits)}（现金 $${usd(num(payload.cashBalance))} / 信用额度 $${usd(num(payload.creditLimit))}）`,
+					`available: $${usd(availableUnits)} (cash $${usd(num(payload.cashBalance))} / credit $${usd(num(payload.creditLimit))})`,
 				],
 			};
 		},
@@ -710,7 +710,7 @@ function codexResetIso(win: OpenAICodexUsageWindow): string | undefined {
 function openaiCodexDef(): ProviderDef {
 	return {
 		name: "openai-codex",
-		title: "OpenAI Codex 额度",
+		title: "OpenAI Codex Usage",
 		ids: ["openai-codex", "codex"],
 		envKeys: [],
 		authIDs: ["openai-codex"],
@@ -733,12 +733,12 @@ function openaiCodexDef(): ProviderDef {
 			if (!rateLimit) return undefined;
 
 			const windows: Array<[string, OpenAICodexUsageWindow | null | undefined]> = [
-				["主额度", rateLimit.primary_window],
-				["次额度", rateLimit.secondary_window],
+				["primary", rateLimit.primary_window],
+				["secondary", rateLimit.secondary_window],
 			];
 			const segments: UsageSegment[] = [];
 			const detailLines: string[] = [];
-			if (payload.plan_type) detailLines.push(`套餐 ${payload.plan_type}`);
+			if (payload.plan_type) detailLines.push(`plan ${payload.plan_type}`);
 			for (const [fallbackLabel, win] of windows) {
 				if (!win || typeof win.used_percent !== "number") continue;
 				const label =
@@ -748,31 +748,31 @@ function openaiCodexDef(): ProviderDef {
 				segments.push({ label, percent: pct(win.used_percent), reset: codexResetIso(win) });
 			}
 			if (rateLimit.limit_reached || rateLimit.allowed === false) {
-				detailLines.push("⚠ 当前额度已耗尽");
+				detailLines.push("⚠ quota exhausted");
 			} else {
-				detailLines.push("当前额度可用");
+				detailLines.push("quota available");
 			}
 			const credits = payload.credits;
 			if (typeof credits?.balance === "number") {
-				detailLines.push(`Credits 余额 ${credits.balance.toFixed(2)}`);
+				detailLines.push(`credits balance ${credits.balance.toFixed(2)}`);
 			} else if (credits?.unlimited) {
-				detailLines.push("Credits 不限额");
+				detailLines.push("unlimited credits");
 			}
-			if (credits?.overage_limit_reached) detailLines.push("⚠ 额外 Credits 已达上限");
-			if (payload.spend_control?.reached) detailLines.push("⚠ 已触及账户支出上限");
+			if (credits?.overage_limit_reached) detailLines.push("⚠ credits overage cap reached");
+			if (payload.spend_control?.reached) detailLines.push("⚠ account spend cap reached");
 			const resets = payload.rate_limit_reset_credits;
 			if (typeof resets?.applicable_available_count === "number") {
-				detailLines.push(`可用额度重置 ${resets.applicable_available_count} 次`);
+				detailLines.push(`${resets.applicable_available_count} usage resets left`);
 			}
 
 			if (segments.length) {
-				return { kind: "percent", title: "OpenAI Codex 额度", segments, detailLines };
+				return { kind: "percent", title: "OpenAI Codex Usage", segments, detailLines };
 			}
 			return {
 				kind: "balance",
-				title: "OpenAI Codex 额度",
+				title: "OpenAI Codex Usage",
 				text:
-					rateLimit.limit_reached || rateLimit.allowed === false ? "⚡ 额度已耗尽" : "⚡ 额度可用",
+					rateLimit.limit_reached || rateLimit.allowed === false ? "⚡ exhausted" : "⚡ available",
 				tone: rateLimit.limit_reached || rateLimit.allowed === false ? "error" : "success",
 				detailLines,
 			};

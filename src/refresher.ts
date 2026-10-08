@@ -135,13 +135,13 @@ export class UsageRefresher {
 	private classify(err: unknown): { code: FailureCode; error: string } {
 		const status = statusOf(err);
 		if (status === 401 || status === 403) {
-			return { code: "auth", error: `API Key 可能已失效（HTTP ${status}）` };
+			return { code: "auth", error: `API key may be revoked (HTTP ${status})` };
 		}
-		if (status === 429) return { code: "rate_limit", error: "限流退避中" };
-		if (status) return { code: "network", error: `查询失败（HTTP ${status}）` };
+		if (status === 429) return { code: "rate_limit", error: "backing off" };
+		if (status) return { code: "network", error: `fetch failed (HTTP ${status})` };
 		return {
 			code: "network",
-			error: `查询失败（${err instanceof Error ? err.message : "网络异常或超时"}）`,
+			error: `fetch failed (${err instanceof Error ? err.message : "network error or timeout"})`,
 		};
 	}
 
@@ -149,7 +149,7 @@ export class UsageRefresher {
 		const signature = state.ok ? `ok:${state.data.kind}` : `fail:${state.code}`;
 		if (this.loggedState.get(def.name) === signature) return;
 		this.loggedState.set(def.name, signature);
-		if (state.ok) this.log(`${def.name} 恢复正常`);
+		if (state.ok) this.log(`${def.name} recovered`);
 		else this.log(`${def.name} ${state.code}: ${state.error}`);
 	}
 
@@ -164,7 +164,7 @@ export class UsageRefresher {
 			this.states.set(def.name, {
 				ok: false,
 				code: "rate_limit",
-				error: "限流退避中",
+				error: "backing off",
 				fetchedAt: new Date(this.now()).toISOString(),
 				retryAt: new Date(this.now() + remaining).toISOString(),
 			});
@@ -180,7 +180,7 @@ export class UsageRefresher {
 				const failure: ProviderState = {
 					ok: false,
 					code: "empty",
-					error: "接口返回为空",
+					error: "empty response",
 					fetchedAt: new Date(this.now()).toISOString(),
 				};
 				this.states.set(def.name, failure);

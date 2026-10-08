@@ -37,11 +37,11 @@ const NAME_WIDTH = 12;
 const BUDGET_CELLS = 56;
 
 const FAILURE_LABELS: Record<string, string> = {
-	no_key: "无key",
-	auth: "key无效",
-	rate_limit: "限流退避中",
-	empty: "查询失败",
-	network: "查询失败",
+	no_key: "no key",
+	auth: "invalid key",
+	rate_limit: "backing off",
+	empty: "fetch failed",
+	network: "fetch failed",
 };
 
 function sleep(ms: number): Promise<void> {
@@ -71,10 +71,10 @@ function failureLabel(state: ProviderFailure): string {
 	if (state.code === "rate_limit" && state.retryAt) {
 		const remainingMs = Date.parse(state.retryAt) - Date.now();
 		if (Number.isFinite(remainingMs) && remainingMs > 0) {
-			return `限流退避中 ${formatDuration(remainingMs / 1000)}`;
+			return `backing off ${formatDuration(remainingMs / 1000)}`;
 		}
 	}
-	return FAILURE_LABELS[state.code] ?? "查询失败";
+	return FAILURE_LABELS[state.code] ?? "fetch failed";
 }
 
 /** The window that binds hardest right now (highest percent). */
@@ -86,13 +86,13 @@ function worstSegment(segments: readonly UsageSegment[]): UsageSegment | undefin
 	return worst;
 }
 
-/** `→ 21:40（剩 3h）`; caller prefixes the separator space. */
+/** `→ 21:40 (3h left)`; caller prefixes the separator space. */
 function resetSuffix(seg: UsageSegment, now: Date): string {
 	if (!seg.reset) return "";
 	const time = formatReset(seg.reset, now);
 	const remainingMs = Date.parse(seg.reset) - now.getTime();
 	if (Number.isFinite(remainingMs) && remainingMs > 0) {
-		return `→ ${time}（剩 ${formatDuration(remainingMs / 1000)}）`;
+		return `→ ${time} (${formatDuration(remainingMs / 1000)} left)`;
 	}
 	return `→ ${time}`;
 }
@@ -305,7 +305,7 @@ export default Plugin.define({
 			for (const seg of state.data.segments) {
 				if (!seg.delta) continue;
 				let part = `${seg.label} ${fmtDelta(seg.delta)}%`;
-				if (seg.etaMs !== undefined) part += `（按当前速率 ~${formatDuration(seg.etaMs / 1000)}后用满）`;
+				if (seg.etaMs !== undefined) part += ` (full in ~${formatDuration(seg.etaMs / 1000)})`;
 				parts.push(part);
 			}
 			return parts.length ? parts.join(" · ") : undefined;
@@ -345,7 +345,7 @@ export default Plugin.define({
 					</Show>
 					<For each={extras()}>{(line) => <text fg={color.muted}>· {trimToCells(line, BUDGET_CELLS - 2)}</text>}</For>
 					<Show when={trendLine(props.state)}>
-						{(line) => <text fg={color.muted}>· 趋势 {trimToCells(line(), BUDGET_CELLS - 5)}</text>}
+						{(line) => <text fg={color.muted}>· trend {trimToCells(line(), BUDGET_CELLS - 5)}</text>}
 					</Show>
 					<Show when={failure()}>
 						{(fail) => (
@@ -390,13 +390,13 @@ export default Plugin.define({
 			};
 			const emptyHint = () =>
 				props.onlyName
-					? "当前提供商未配置 API Key，或暂无对应的用量查询接口"
-					: "暂无数据：没有发现已配置 key 的提供商（/connect 连接后再试）";
+					? "Current provider has no API key configured, or no usage endpoint is available for it"
+					: "No data: no provider with a usable key was found (try again after /connect)";
 			const sessionCost = () => {
 				costTick(); // re-read after the open-time sync lands
 				if (!props.sessionID) return undefined;
 				const cost = context.data.session.cost(props.sessionID);
-				return Number.isFinite(cost) && cost > 0 ? `本会话成本 $${cost.toFixed(3)}` : undefined;
+				return Number.isFinite(cost) && cost > 0 ? `session cost $${cost.toFixed(3)}` : undefined;
 			};
 			return (
 				<box
@@ -409,8 +409,8 @@ export default Plugin.define({
 					backgroundColor={theme.background.base}
 				>
 					<box flexDirection="row" gap={1}>
-						<text fg={color.base}>模型额度明细</text>
-						<text fg={color.muted}>· /quota all 查看全部</text>
+						<text fg={color.base}>Usage Details</text>
+						<text fg={color.muted}>· /quota all for every provider</text>
 					</box>
 					<Show when={visible().length > 0} fallback={<text fg={color.muted}>{emptyHint()}</text>}>
 						<For each={visible()}>
@@ -424,7 +424,7 @@ export default Plugin.define({
 						</For>
 					</Show>
 					<Show when={sessionCost()}>{(line) => <text fg={color.muted}>{line()}</text>}</Show>
-					<text fg={color.muted}>更新于 {stamp(new Date(snap().updatedAt))}</text>
+					<text fg={color.muted}>updated {stamp(new Date(snap().updatedAt))}</text>
 				</box>
 			);
 		}
