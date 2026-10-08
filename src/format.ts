@@ -79,6 +79,37 @@ export function barParts(percent: number, width = 20): { filled: string; empty: 
 	};
 }
 
+
+/** Terminal cell width of a string (CJK/fullwidth = 2 cells). */
+export function cells(s: string): number {
+	let n = 0
+	for (const ch of s) n += ch.codePointAt(0)! > 0x2e7f ? 2 : 1
+	return n
+}
+
+
+/** Trim a string to at most `width` terminal cells, appending "…" when cut. */
+export function trimToCells(s: string, width: number): string {
+	if (width < 1) return ""
+	if (cells(s) <= width) return s
+	let n = 0
+	let out = ""
+	for (const ch of s) {
+		const w = ch.codePointAt(0)! > 0x2e7f ? 2 : 1
+		if (n + w > width - 1) break
+		out += ch
+		n += w
+	}
+	return `${out}…`
+}
+
+
+/** Pad a string with spaces to exactly `width` terminal cells. */
+export function padCells(s: string, width: number): string {
+	const n = cells(s)
+	return n >= width ? s : s + " ".repeat(width - n)
+}
+
 export function stamp(date: Date): string {
 	return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
 }

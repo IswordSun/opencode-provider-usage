@@ -2,7 +2,7 @@
 /**
  * opencode-provider-usage — TUI plugin.
  *
- * Renders the active provider's usage/balance in the footer status row and
+ * Renders the active provider's usage/balance in the sidebar footer and
  * opens a detail dialog on click or `/quota`. All data comes from the server
  * plugin over RPC (`isword.provider-usage`); this plugin never touches
  * credentials or the network.
@@ -18,10 +18,10 @@
 
 import { Plugin } from "@opencode/plugin/tui";
 import { For, Show, createSignal, type JSX } from "solid-js";
-import { barParts, formatDuration, formatReset, fmtDelta, stamp } from "./format.js";
+import { barParts, cells, formatDuration, formatReset, fmtDelta, padCells, stamp, trimToCells } from "./format.js";
 import { matchProvider, providerDefs, type ProviderDef } from "./providers.js";
 import { ProviderUsage } from "./rpc.js";
-import type { ProviderFailure, ProviderState, Snapshot, UsageSegment } from "./types.js";
+import type { ProviderFailure, ProviderState, Snapshot, Tone, UsageSegment } from "./types.js";
 import { EMPTY_SNAPSHOT } from "./types.js";
 import { parseSnapshot } from "./validate.js";
 
@@ -30,10 +30,11 @@ const REFRESH_TIMEOUT_MS = 15_000;
 /** Safety re-pull cadence in case `updated` events were missed. */
 const SAFETY_POLL_MS = 120_000;
 const BAR_WIDTH = 20;
-const FOOTER_BAR_WIDTH = 5;
+/** Width of the mini bars in the sidebar block. */
+const SIDEBAR_BAR_WIDTH = 10;
 const NAME_WIDTH = 12;
-/** Below this terminal width the footer drops its mini bars. */
-const NARROW_WIDTH = 100;
+/** Usable cell width of the large detail dialog body (60-col frame minus padding). */
+const BUDGET_CELLS = 56;
 
 const FAILURE_LABELS: Record<string, string> = {
 	no_key: "无key",
@@ -85,15 +86,44 @@ function worstSegment(segments: readonly UsageSegment[]): UsageSegment | undefin
 	return worst;
 }
 
-/** `→ 重置 21:40（剩 3h）`; caller prefixes the separator space. */
+/** `→ 21:40（剩 3h）`; caller prefixes the separator space. */
 function resetSuffix(seg: UsageSegment, now: Date): string {
 	if (!seg.reset) return "";
 	const time = formatReset(seg.reset, now);
 	const remainingMs = Date.parse(seg.reset) - now.getTime();
 	if (Number.isFinite(remainingMs) && remainingMs > 0) {
-		return `→ 重置 ${time}（剩 ${formatDuration(remainingMs / 1000)}）`;
+		return `→ ${time}（剩 ${formatDuration(remainingMs / 1000)}）`;
 	}
-	return `→ 重置 ${time}`;
+	return `→ ${time}`;
+}
+
+/**
+ * Usage gradient palettes. Six steps from "plenty left" to "exhausted"; a
+ * light-theme set keeps contrast on pale backgrounds. Reset countdowns get a
+ * cyan accent and trend deltas point up (hot) / down (cool).
+ */
+const USAGE_STEPS = [15, 30, 45, 60, 75, 90, 101] as const;
+const DARK_PALETTE = {
+	usage: ["#4ade80", "#a3e635", "#eab308", "#f59e0b", "#fb923c", "#ef4444"],
+	tone: { success: "#4ade80", warning: "#facc15", error: "#f87171" } as Record<Tone, string>,
+	reset: "#22d3ee",
+	deltaUp: "#fb923c",
+	deltaDown: "#4ade80",
+};
+const LIGHT_PALETTE = {
+	usage: ["#16a34a", "#65a30d", "#ca8a04", "#d97706", "#ea580c", "#dc2626"],
+	tone: { success: "#16a34a", warning: "#ca8a04", error: "#dc2626" } as Record<Tone, string>,
+	reset: "#0891b2",
+	deltaUp: "#ea580c",
+	deltaDown: "#16a34a",
+};
+type Palette = typeof DARK_PALETTE;
+
+function usageColor(percent: number, palette: Palette): string {
+	for (let i = 0; i < USAGE_STEPS.length; i++) {
+		if (percent < USAGE_STEPS[i]) return palette.usage[i];
+	}
+	return palette.usage[palette.usage.length - 1];
 }
 
 export default Plugin.define({
@@ -105,14 +135,14 @@ export default Plugin.define({
 		let disposed = false;
 
 		const theme = context.theme;
+		const palette: Palette =
+			(context as unknown as { themeMode?: unknown }).themeMode === "light" ? LIGHT_PALETTE : DARK_PALETTE;
 		const color = {
 			base: theme.text.base,
 			muted: theme.text.muted,
-			success: theme.text.feedback.success.base,
-			warning: theme.text.feedback.warning.base,
-			error: theme.text.feedback.error.base,
 		};
-		const toneColor = (tone: "success" | "warning" | "error") => color[tone];
+		const toneColor = (tone: Tone) => palette.tone[tone];
+		const barColor = (percent: number) => usageColor(percent, palette);
 
 		/** Terminal width, reactive on resize; narrow terminals drop the bars. */
 		const readWidth = (): number => {
@@ -190,11 +220,12 @@ export default Plugin.define({
 			return route.type === "session" ? route.sessionID : undefined;
 		};
 
-		// --- footer ---------------------------------------------------------------
+		// --- sidebar ----------------------------------------------------------------
 
-		function statusText(state: ProviderState): JSX.Element {
+		/** Compact quota block for the sidebar: one mini bar row per window. */
+		function SidebarRows(state: ProviderState): JSX.Element {
 			if (!state.ok) {
-				return <text fg={color.muted}>⚡ {failureLabel(state)}</text>;
+				return <text fg={toneColor("error")}>⚡ {failureLabel(state)}</text>;
 			}
 			if (state.data.kind === "balance") {
 				return <text fg={toneColor(state.data.tone)}>{state.data.text}</text>;
@@ -202,35 +233,24 @@ export default Plugin.define({
 			const now = new Date();
 			const segments = state.data.segments;
 			const worst = worstSegment(segments);
-			const withBars = termWidth() >= NARROW_WIDTH;
 			return (
-				<box flexDirection="row" flexShrink={0}>
-					<text fg={toneColor(worstTone(segments))}>⚡ </text>
+				<box flexDirection="column">
 					<For each={segments}>
-						{(seg, index) => {
-							const tone = segmentTone(seg.percent);
-							const parts = barParts(seg.percent, FOOTER_BAR_WIDTH);
+						{(seg) => {
+							const parts = barParts(seg.percent, SIDEBAR_BAR_WIDTH);
+							const fill = barColor(seg.percent);
 							return (
-								<>
-									{index() > 0 ? <text fg={color.muted}> · </text> : null}
-									{withBars ? (
-										<>
-											<text fg={toneColor(tone)}>{parts.filled}</text>
-											<text fg={color.muted}>{parts.empty} </text>
-										</>
-									) : null}
-									<text fg={toneColor(tone)}>
-										{seg.label} {seg.percent}%
-									</text>
-									{seg === worst && seg.delta ? (
-										<text fg={color.muted}> {fmtDelta(seg.delta)}%</text>
-									) : null}
-								</>
+								<box flexDirection="row" flexWrap="no-wrap">
+									<text fg={color.muted} flexShrink={0}>{padCells(seg.label, 3)} </text>
+									{parts.filled ? <text fg={fill} flexShrink={0}>{parts.filled}</text> : null}
+									{parts.empty ? <text fg={color.muted} flexShrink={0}>{parts.empty}</text> : null}
+									<text fg={fill} flexShrink={0}>{` ${String(seg.percent).padStart(3)}%`}</text>
+								</box>
 							);
 						}}
 					</For>
 					{worst?.reset && worst.percent > 0 ? (
-						<text fg={color.muted}> →{formatReset(worst.reset, now)}</text>
+						<text fg={palette.reset}> {resetSuffix(worst, now)}</text>
 					) : null}
 				</box>
 			);
@@ -238,26 +258,45 @@ export default Plugin.define({
 
 		// --- dialog ----------------------------------------------------------------
 
-		/** One window as a coloured progress-bar row. */
-		function BarRow(props: { seg: UsageSegment }): JSX.Element {
-			const now = new Date();
-			const parts = barParts(props.seg.percent, BAR_WIDTH);
-			const tone = segmentTone(props.seg.percent);
-			const percent = `${String(props.seg.percent).padStart(3)}%`;
+		/**
+		 * One window as a coloured progress-bar row pair. Column widths
+		 * (label, bar, percent) come from the parent so every window of the
+		 * provider lines up on identical columns; the sub line carries the
+		 * credits note and trend delta.
+		 */
+		function BarRow(props: { seg: UsageSegment; labelWidth: number; barWidth: number; budget: number }): JSX.Element {
+			const now = new Date()
+			const percentText = ` ${String(props.seg.percent).padStart(3)}%`
+			const resetText = resetSuffix(props.seg, now)
+			const noteText = props.seg.note
+			const deltaText = props.seg.delta !== undefined ? `${fmtDelta(props.seg.delta)}%` : undefined
+			const labelText = `${padCells(props.seg.label, props.labelWidth)} `
+
+			const parts = barParts(props.seg.percent, props.barWidth)
+			const fill = barColor(props.seg.percent)
+			const deltaFg = (props.seg.delta ?? 0) > 0 ? palette.deltaUp : palette.deltaDown
 			return (
-				<box flexDirection="row">
-					<text fg={color.base}>{`${props.seg.label.padEnd(4)} `}</text>
-					<text fg={toneColor(tone)}>{parts.filled}</text>
-					<text fg={color.muted}>{parts.empty}</text>
-					<text fg={toneColor(tone)}>{` ${percent}`}</text>
-					{props.seg.delta ? (
-						<text fg={color.muted}>{` ${fmtDelta(props.seg.delta)}%`}</text>
+				<box flexDirection="column">
+					<box flexDirection="row" flexWrap="no-wrap">
+						<text fg={color.base} flexShrink={0}>{labelText}</text>
+						{parts.filled ? <text fg={fill} flexShrink={0}>{parts.filled}</text> : null}
+						{parts.empty ? <text fg={color.muted} flexShrink={0}>{parts.empty}</text> : null}
+						<text fg={fill} flexShrink={0}>{percentText}</text>
+						{resetText ? <text fg={palette.reset} flexShrink={0}>{` ${resetText}`}</text> : null}
+						{props.seg.status ? <text fg={toneColor("warning")} flexShrink={0}>{` ⚠${props.seg.status}`}</text> : null}
+					</box>
+					{noteText || deltaText ? (
+						<box flexDirection="row" paddingLeft={props.labelWidth + 1}>
+							{noteText ? (
+								<text fg={color.muted} flexShrink={0}>
+									{trimToCells(noteText, Math.max(8, props.budget - props.labelWidth - 1 - (deltaText ? cells(deltaText) + 3 : 0)))}
+								</text>
+							) : null}
+							{deltaText ? <text fg={deltaFg} flexShrink={0}>{`${noteText ? " · " : ""}${deltaText}`}</text> : null}
+						</box>
 					) : null}
-					{props.seg.status ? <text fg={color.warning}>{` ⚠${props.seg.status}`}</text> : null}
-					{props.seg.note ? <text fg={color.muted}>{` ${props.seg.note}`}</text> : null}
-					<text fg={color.muted}>{` ${resetSuffix(props.seg, now)}`}</text>
 				</box>
-			);
+			)
 		}
 
 		function trendLine(state: ProviderState): string | undefined {
@@ -278,33 +317,42 @@ export default Plugin.define({
 			const percent = () => (props.state.ok && props.state.data.kind === "percent" ? props.state.data : undefined);
 			const balance = () => (props.state.ok && props.state.data.kind === "balance" ? props.state.data : undefined);
 			const extras = () => (props.state.ok ? props.state.data.detailLines : []);
-			const updatedAt = () => (props.state.ok ? stamp(new Date(props.state.fetchedAt)) : undefined);
 			return (
 				<box flexDirection="column">
 					<text fg={color.base}>{props.state.ok ? props.state.data.title : `${props.def.title} — ✗`}</text>
 					<Show when={percent()}>
-						{(data) => (
-							<box flexDirection="column">
-								<For each={data().segments}>{(seg) => <BarRow seg={seg} />}</For>
-							</box>
-						)}
+						{(data) => {
+							const segs = data().segments
+							const now = new Date()
+							const labelWidth = Math.max(4, Math.min(8, ...segs.map((s) => cells(s.label))))
+							const resetWidth = Math.max(0, ...segs.map((s) => cells(resetSuffix(s, now))))
+							const budget = Math.max(28, Math.min(termWidth() - 12, BUDGET_CELLS))
+							const barWidth = Math.max(
+								6,
+								Math.min(BAR_WIDTH, budget - (labelWidth + 1) - 5 - (resetWidth ? resetWidth + 1 : 0)),
+							)
+							return (
+								<box flexDirection="column">
+									<For each={segs}>
+										{(seg) => <BarRow seg={seg} labelWidth={labelWidth} barWidth={barWidth} budget={budget} />}
+									</For>
+								</box>
+							)
+						}}
 					</Show>
 					<Show when={balance()}>
 						{(data) => <text fg={toneColor(data().tone)}>{data().text}</text>}
 					</Show>
-					<For each={extras()}>{(line) => <text fg={color.muted}>· {line}</text>}</For>
+					<For each={extras()}>{(line) => <text fg={color.muted}>· {trimToCells(line, BUDGET_CELLS - 2)}</text>}</For>
 					<Show when={trendLine(props.state)}>
-						{(line) => <text fg={color.muted}>· 趋势 {line()}</text>}
+						{(line) => <text fg={color.muted}>· 趋势 {trimToCells(line(), BUDGET_CELLS - 5)}</text>}
 					</Show>
 					<Show when={failure()}>
 						{(fail) => (
-							<text fg={color.error}>
+							<text fg={toneColor("error")}>
 								✗ {failureLabel(fail())} — {fail().error}
 							</text>
 						)}
-					</Show>
-					<Show when={updatedAt()}>
-						{(stampText) => <text fg={color.muted}>更新于 {stampText()}</text>}
 					</Show>
 				</box>
 			);
@@ -405,33 +453,34 @@ export default Plugin.define({
 
 		// --- slots ---------------------------------------------------------------
 
-		const statusSlot = (sessionID?: string) => {
+		const sidebarBlock = (sessionID?: string) => {
 			const state = () => {
 				const def = activeDef();
 				return def ? snap().providers[def.name] : undefined;
 			};
 			return (
 				<Show when={state()}>
-					{(value) => (
-						<box
-							flexShrink={0}
-							paddingLeft={1}
-							onMouseUp={() => openDetails(activeDef()?.name, sessionID)}
-						>
-							{statusText(value())}
-						</box>
-					)}
+					{(value) => {
+						const def = activeDef();
+						return (
+							<box
+								flexDirection="column"
+								paddingLeft={1}
+								paddingBottom={1}
+								onMouseUp={() => openDetails(def?.name, sessionID)}
+							>
+								{def ? <text fg={color.muted} flexShrink={0}>⚡ {trimToCells(def.title, 18)}</text> : null}
+								{SidebarRows(value())}
+							</box>
+						);
+					}}
 				</Show>
 			);
 		};
 
-		const disposePrompt = context.ui.slot({
-			append: "prompt.footer.status",
-			render: (input) => statusSlot(input.sessionID),
-		});
-		const disposeHome = context.ui.slot({
-			append: "home.footer.status",
-			render: () => statusSlot(),
+		const disposeSidebar = context.ui.slot({
+			append: "sidebar.footer",
+			render: (input?: { sessionID?: string }) => sidebarBlock(input?.sessionID),
 		});
 
 		// --- commands ------------------------------------------------------------
@@ -461,8 +510,7 @@ export default Plugin.define({
 				// Listener was never attached.
 			}
 			unsubscribe?.();
-			disposePrompt();
-			disposeHome();
+			disposeSidebar();
 		};
 	},
 });
