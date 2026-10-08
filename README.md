@@ -1,10 +1,10 @@
 # opencode-provider-usage
 
-[opencode](https://opencode.ai) v2 plugin：在 TUI 状态栏实时显示当前模型提供商的额度 / 余额，
-点击或 `/quota` 查看明细。
+> Live provider quota / balance / credits for OpenCode v2 — rendered in the TUI
+> sidebar with gradient bars, trend ETA and a `/quota` detail dialog. 中文文档如下。
 
-是从 pi 的 [`pi-provider-usage`](../pi-provider-usage) 扩展移植而来的 V2 版本，取代原先的
-V1 双文件方案（`plugins.v1.bak/quota-display.js` + `quota-statusbar.tsx`）。
+[opencode](https://opencode.ai) v2 插件：在 TUI **侧栏**实时显示当前模型提供商的额度 / 余额，
+点击侧栏块或 `/quota` 查看明细。V2 原生插件（server + TUI 双端，RPC 通信）。
 
 ## 支持的提供商
 
@@ -33,7 +33,7 @@ Perplexity、Fireworks 等。OpenRouter 用普通 Key 查询会得到明确的"�
 
 1. 枚举 opencode 里实际配置的服务商（`ctx.provider.list()`），按 **integration id** 和 **baseURL 主机名** 匹配到已知适配器——所以你自己在 `opencode.jsonc` 里加的、指向已知端点的自定义服务商也会被认出来；
 2. 凭据解析顺序：integration 连接 → 适配器声明的环境变量 → 旧 `auth.json`；
-3. 解析不出 key 的适配器**不进快照**（页脚、`/quota`、`/quota all` 一律不出现，不会有 `无key` 噪音）；
+3. 解析不出 key 的适配器**不进快照**（侧栏、`/quota`、`/quota all` 一律不出现，不会有 `无key` 噪音）；
 4. key 被移除后，该提供商会在下一轮刷新中自动从快照里消失。
 
 新增一家没有适配器的服务商时，只需在 `src/providers.ts` 里加一个 `ids`/`hosts`/`fetch` 定义即可，其余逻辑不用动。CN/国际双站点的服务商（moonshot、siliconflow、zai）共用 `fetchSites` 助手：一个站点返回 401/403 时自动换另一个站点试，避免"国内 key 打国际站"的误报。
@@ -44,9 +44,9 @@ opencode v2 的插件分两半，通过 RPC 通信：
 
 - `index.ts` → `src/index.ts`：**server 插件**。只负责 opencode 接线（凭据解析、发现、storage、RPC、定时器、日志）；
   通过 RPC `isword.provider-usage` 暴露快照；每 2 分钟轮询、会话空闲 / 每轮结束时刷新。
-- `tui.tsx` → `src/tui.tsx`：**TUI 插件**。只读 RPC，把当前提供商的状态渲染到页脚状态行，
+- `tui.tsx` → `src/tui.tsx`：**TUI 插件**。只读 RPC，把当前提供商的状态渲染到侧栏（`sidebar.footer`），
   点击或 `/quota` 打开明细对话框；`/quota all` 查看全部（每家一行，适配对话框高度）。
-- `src/providers.ts`：5 家提供商的官方接口实现（从 pi 移植）。
+- `src/providers.ts`：各提供商的官方用量接口实现（见上表，共 10 家适配器）。
 - `src/backoff.ts`：429 指数退避（纯函数、可注入时钟）。
 - `src/samples.ts`：趋势样本存储（1 小时窗口、重置骤降清零、纯函数）。
 - `src/refresher.ts`：刷新状态机（状态、缓存 TTL、退避、趋势样本），时钟/抓取均可注入，全部单测覆盖。
@@ -57,24 +57,41 @@ opencode v2 的插件分两半，通过 RPC 通信：
 
 ## 安装
 
-在 `~/.config/opencode/opencode.json` 与 `~/.config/opencode/cli.json` 中把本目录加入 `plugins`：
+**npm 包（推荐）** — 在 `~/.config/opencode/opencode.json` 加入：
 
 ```jsonc
 {
-  "plugins": ["/Users/isword/DEV/Workspace/opencode-provider-usage"]
+  "plugins": ["opencode-provider-usage"]
 }
 ```
 
-然后 `opencode reload`（或重启服务）。opencode 会自动发现目录下的 `index.ts` / `tui.tsx`。
+重启 TUI（或 `opencode service restart`）。opencode 会在后台自动从 registry 拉取并加载，
+TUI 部分通过 `./tui` 导出自动挂载，无需改 `cli.json`。
+
+**本地开发** — 直接指向仓库目录，文件改动自动重载：
+
+```jsonc
+{
+  "plugins": ["/path/to/opencode-provider-usage"]
+}
+```
 
 ## 使用
 
-- **页脚状态行**按当前模型自动切换（⚡ 按最紧张窗口着色，宽度自适应）：
-  - 额度类（宽终端带迷你进度条，重置时间只标注最紧张窗口）：
-    `⚡ ░░░░░ 5h 0% · ░░░░░ 7d 0% · ██░░░ 30d 30% →11-02 21:44`
-  - 额度类（<100 列的窄终端自动去条）：`⚡ 5h 0% · 7d 0% · 30d 30% →11-02 21:44`
-  - 余额类：`💰 ¥299.59`
-- **`/quota`（或点击页脚）**打开当前提供商的明细，额度窗口渲染为彩色进度条：
+- **侧栏块**（`sidebar.footer`，随会话侧栏出现）按当前模型自动切换：
+
+  ```
+  ⚡ GLM Coding Plan 额度
+  5h   ████████▌░░  62%
+  7d   ████░░░░░░░  21%
+  30d  █████░░░░░░  30%
+   → 02:24（剩 2h）
+  ```
+
+  - 条形按用量 6 档梯度变色（绿 → 青柠 → 黄 → 琥珀 → 橙 → 红），明暗主题自适应；
+  - 重置倒计时青色高亮，只标注最紧张窗口；
+  - 余额类一行显示：`💰 ¥299.59`；点击侧栏块打开明细。
+- **`/quota`**（或点击侧栏块）打开当前提供商的明细，额度窗口渲染为彩色进度条：
 
   ```
   OpenCode 额度
@@ -83,10 +100,11 @@ opencode v2 的插件分两半，通过 RPC 通信：
     30d  ██████░░░░░░░░░░░░░░   30% → 重置 11-02 21:44（剩 26d）
   ```
 
-  条形按阈值变色（<60 绿 / <85 黄 / ≥85 红），附窗口状态（`⚠limited`）、积分明细、趋势与预计用满时间。
+  明细弹窗内同样使用梯度配色，附窗口状态（`⚠limited`）、积分明细、涨跌箭头
+  （`↑` 橙 / `↓` 绿）、趋势与预计用满时间。
 - **`/quota all`**并列显示**全部有 key 的**提供商，名称对齐、每家一行摘要（额度窗口 + 趋势 / 余额 / ✗ 失败原因）。
 - 失败显式呈现：`⚡ key无效` / `⚡ 限流退避中 12m` / `⚡ 查询失败`，不会用旧数据冒充最新值。
-- 429 每提供商独立退避（10 分钟起，翻倍至 60 分钟），状态栏会显示剩余退避时长。
+- 429 每提供商独立退避（10 分钟起，翻倍至 60 分钟），失败提示会显示剩余退避时长。
 - 趋势样本持久化在插件 storage 中，展示 1 小时内的百分点变化与预计用满时间；重启后快照与样本从 storage 播种，首秒即有数据。
 
 ## 健壮性
@@ -119,4 +137,4 @@ bunx tsc --noEmit # 类型检查
 ## 备注
 
 - zai 的 GLM monitor 接口在 key 失效时返回 HTTP 200 + `success:false`，插件会归类为 `key无效`。
-- 旧的 V1 文件与 `command/quota.md` 已停用，见 `~/.config/opencode/plugins.v1.bak/`。
+- MIT License。
